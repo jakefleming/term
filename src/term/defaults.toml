@@ -1,0 +1,33 @@
+# Bundled defaults for term. Merged under user config (~/.config/term/config.toml)
+# and project pipeline (<repo>/.term/pipeline.toml).
+
+[agents.claude-code]
+command = ["claude"]
+one_shot = ["claude", "-p", "{prompt}"]
+
+[agents.codex]
+command = ["codex"]
+one_shot = ["codex", "exec", "{prompt}"]
+
+[agents.shell]
+command = ["bash"]
+
+[roles.spec-writer]
+agent = "claude-code"
+prompt_template = """You are writing a specification. Produce a clear SPEC.md in this worktree that captures the problem, goals, non-goals, and key decisions. Ask clarifying questions if needed before writing."""
+
+[roles.reviewer]
+agent = "codex"
+prompt_template = """Review SPEC.md that was just delivered into this worktree. Write your review to REVIEW.md, flagging gaps, ambiguities, contradictions, and risks. Be specific."""
+
+[roles.builder]
+agent = "claude-code"
+prompt_template = """Implement SPEC.md, addressing the concerns in REVIEW.md. Make the changes directly in this worktree. Commit logically when you finish a unit of work."""
+
+[pipeline]
+name = "spec-review-build"
+nodes = [
+  { role = "spec-writer", mode = "persistent" },
+  { role = "reviewer",    mode = "persistent" },
+  { role = "builder",     mode = "persistent" },
+]
