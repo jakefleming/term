@@ -20,6 +20,7 @@ _HELP = """\
   F4          Toggle diff tray
   F5          Toggle focus: pipeline sidebar ↔ pane
   F6          + Add agent (open spawn picker)
+  F8          Toggle mouse tracking (off = native text selection)
   F12         This help screen
 
 [b]Palette commands[/b]  (open with F1)

@@ -96,6 +96,7 @@ class TermApp(App[None]):
         Binding("f4",      "toggle_diff",           "Diff",     priority=True),
         Binding("f5",      "toggle_sidebar_focus",  "Pipeline", priority=True),
         Binding("f6",      "add_agent",             "+ Add",    priority=True),
+        Binding("f8",      "toggle_mouse",          "Mouse",    priority=True),
         Binding("f12",     "open_help",             "Help",     priority=True),
     ]
 
@@ -113,12 +114,9 @@ class TermApp(App[None]):
         self.pipeline = PipelineRun(config, workspace)
         self._current_node_id: str | None = None
         self._yolo = yolo
-        # macOS Terminal.app eats drag-and-drop when mouse tracking is on
-        # (the drop becomes a mouse event instead of a path paste). Default
-        # mouse off there; on elsewhere.
-        if mouse is None:
-            mouse = os.environ.get("TERM_PROGRAM") != "Apple_Terminal"
-        self._mouse = mouse
+        # Default mouse on; F8 toggles it off mid-session for native text
+        # selection. Drag-drop works in either mode (handled at App level).
+        self._mouse = True if mouse is None else mouse
 
     async def on_paste(self, event) -> None:
         """App-level paste handler.
@@ -206,14 +204,7 @@ class TermApp(App[None]):
         self.set_interval(1.0, self._tick_status)
 
         if not self._mouse:
-            # Textual enables mouse tracking on startup; override after the
-            # driver has initialized so terminals (notably Apple Terminal)
-            # fall back to text-paste behavior for drag-and-drop.
-            try:
-                sys.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")
-                sys.stdout.flush()
-            except Exception:
-                pass
+            self._write_mouse_seq(enable=False)
 
         if self._yolo:
             yolo_agents = sorted(
@@ -344,6 +335,30 @@ class TermApp(App[None]):
 
     def action_toggle_diff(self) -> None:
         self.query_one(DiffTray).toggle_class("hidden")
+
+    def action_toggle_mouse(self) -> None:
+        """Toggle mouse tracking. Off lets the terminal handle native
+        click-drag text selection; on lets the app receive clicks
+        (sidebar items, etc.).
+        """
+        self._mouse = not self._mouse
+        self._write_mouse_seq(enable=self._mouse)
+        self.notify(
+            f"mouse {'on' if self._mouse else 'off — select text natively'}",
+            timeout=3,
+        )
+
+    def _write_mouse_seq(self, *, enable: bool) -> None:
+        # Standard SGR mouse modes Textual uses; toggling them all is
+        # the safest way to coexist with whatever it set up.
+        codes = ["?1000", "?1002", "?1003", "?1006"]
+        suffix = "h" if enable else "l"
+        seq = "".join(f"\x1b[{c}{suffix}" for c in codes)
+        try:
+            sys.stdout.write(seq)
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def action_open_help(self) -> None:
         self.push_screen(HelpScreen())
