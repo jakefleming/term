@@ -578,10 +578,8 @@ class TermApp(App[None]):
 
 def run_term(workspace_root: Path | None = None) -> None:
     from term.config import load_config
-    workspace = (
-        Workspace(workspace_root) if workspace_root is not None
-        else Workspace.discover(Path.cwd())
-    )
+    start = workspace_root if workspace_root is not None else Path.cwd()
+    workspace = Workspace.discover(start)
     config = load_config(workspace.root)
     TermApp(config, workspace).run()
 

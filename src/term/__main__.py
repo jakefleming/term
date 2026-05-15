@@ -1,10 +1,8 @@
 """CLI for term.
 
-Three commands:
-
-  term            # open the TUI in the current workspace
-  term init       # scaffold .term/ in the current directory (creates a git
-                  # repo if needed)
+  term [PATH]     # open the TUI in PATH (defaults to current directory)
+  term init [PATH]
+                  # scaffold .term/ in PATH (creates a git repo if needed)
   term spike CMD  # one-pane fallback for poking at the PTY widget
 """
 
@@ -37,8 +35,12 @@ def _cmd_spike(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_default(_args: argparse.Namespace) -> int:
-    run_term()
+def _cmd_default(args: argparse.Namespace) -> int:
+    path = Path(args.path).resolve() if args.path else None
+    if path is not None and not path.exists():
+        print(f"error: {path} does not exist", file=sys.stderr)
+        return 2
+    run_term(workspace_root=path)
     return 0
 
 
@@ -70,26 +72,41 @@ nodes = []
 
 
 def main(argv: list[str] | None = None) -> None:
+    raw = sys.argv[1:] if argv is None else list(argv)
+
+    # Hand-dispatch subcommands so the default `term [PATH]` form doesn't
+    # collide with argparse's subparser positional handling.
+    if raw and raw[0] == "init":
+        parser = argparse.ArgumentParser(
+            prog="term init",
+            description="Scaffold a term workspace.",
+        )
+        parser.add_argument("path", nargs="?", default=None,
+                            help="Directory to init (defaults to current dir)")
+        ns = parser.parse_args(raw[1:])
+        sys.exit(_cmd_init(ns))
+
+    if raw and raw[0] == "spike":
+        parser = argparse.ArgumentParser(
+            prog="term spike",
+            description="One-pane PTY widget smoke test.",
+        )
+        parser.add_argument("command", nargs=argparse.REMAINDER,
+                            help="Command to run inside the pane (default: $SHELL)")
+        parser.add_argument("--cwd", default=None)
+        ns = parser.parse_args(raw[1:])
+        sys.exit(_cmd_spike(ns))
+
+    # Default: `term [PATH]`.
     parser = argparse.ArgumentParser(
         prog="term",
         description="TUI for orchestrating CLI coding agents as a pipeline.",
+        epilog="Subcommands: `term init [PATH]`, `term spike -- CMD`.",
     )
-    sub = parser.add_subparsers(dest="cmd")
-
-    init = sub.add_parser("init", help="Scaffold a term workspace in the current directory")
-    init.add_argument("path", nargs="?", default=None)
-    init.set_defaults(func=_cmd_init)
-
-    spike = sub.add_parser("spike", help="One-pane PTY widget smoke test")
-    spike.add_argument("command", nargs=argparse.REMAINDER,
-                       help="Command to run inside the pane (default: $SHELL)")
-    spike.add_argument("--cwd", default=None)
-    spike.set_defaults(func=_cmd_spike)
-
-    parser.set_defaults(func=_cmd_default)
-
-    args = parser.parse_args(argv)
-    sys.exit(args.func(args))
+    parser.add_argument("path", nargs="?", default=None,
+                        help="Directory to open (defaults to current directory)")
+    ns = parser.parse_args(raw)
+    sys.exit(_cmd_default(ns))
 
 
 if __name__ == "__main__":
