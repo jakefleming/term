@@ -23,6 +23,7 @@ import asyncio
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Sequence
@@ -104,6 +105,7 @@ class TermApp(App[None]):
         workspace: Workspace,
         *,
         yolo: bool = False,
+        mouse: bool | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -111,6 +113,12 @@ class TermApp(App[None]):
         self.pipeline = PipelineRun(config, workspace)
         self._current_node_id: str | None = None
         self._yolo = yolo
+        # macOS Terminal.app eats drag-and-drop when mouse tracking is on
+        # (the drop becomes a mouse event instead of a path paste). Default
+        # mouse off there; on elsewhere.
+        if mouse is None:
+            mouse = os.environ.get("TERM_PROGRAM") != "Apple_Terminal"
+        self._mouse = mouse
 
     def _yolo_extend(self, base: tuple[str, ...] | list[str], recipe) -> list[str]:
         """Append yolo_args when --yolo is on.
@@ -156,6 +164,16 @@ class TermApp(App[None]):
 
         # Tick status states for persistent panes based on PTY activity.
         self.set_interval(1.0, self._tick_status)
+
+        if not self._mouse:
+            # Textual enables mouse tracking on startup; override after the
+            # driver has initialized so terminals (notably Apple Terminal)
+            # fall back to text-paste behavior for drag-and-drop.
+            try:
+                sys.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l")
+                sys.stdout.flush()
+            except Exception:
+                pass
 
         if self._yolo:
             yolo_agents = sorted(
@@ -608,12 +626,17 @@ class TermApp(App[None]):
 
 # --- entrypoints -----------------------------------------------------------
 
-def run_term(workspace_root: Path | None = None, *, yolo: bool = False) -> None:
+def run_term(
+    workspace_root: Path | None = None,
+    *,
+    yolo: bool = False,
+    mouse: bool | None = None,
+) -> None:
     from term.config import load_config
     start = workspace_root if workspace_root is not None else Path.cwd()
     workspace = Workspace.discover(start)
     config = load_config(workspace.root)
-    TermApp(config, workspace, yolo=yolo).run()
+    TermApp(config, workspace, yolo=yolo, mouse=mouse).run()
 
 
 def run_spike(command: Sequence[str] | None, cwd: str | None = None) -> None:

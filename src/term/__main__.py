@@ -40,7 +40,7 @@ def _cmd_default(args: argparse.Namespace) -> int:
     if path is not None and not path.exists():
         print(f"error: {path} does not exist", file=sys.stderr)
         return 2
-    run_term(workspace_root=path, yolo=args.yolo)
+    run_term(workspace_root=path, yolo=args.yolo, mouse=args.mouse)
     return 0
 
 
@@ -111,6 +111,18 @@ def main(argv: list[str] | None = None) -> None:
         help="Append each agent's yolo_args (e.g. claude's "
              "--dangerously-skip-permissions). Per-agent yolo_args live in "
              "bundled defaults or ~/.config/term/config.toml.",
+    )
+    mouse_group = parser.add_mutually_exclusive_group()
+    mouse_group.add_argument(
+        "--mouse", dest="mouse", action="store_true", default=None,
+        help="Enable mouse tracking (clickable sidebar). Off by default on "
+             "Apple Terminal because it breaks drag-and-drop of files; on "
+             "elsewhere.",
+    )
+    mouse_group.add_argument(
+        "--no-mouse", dest="mouse", action="store_false",
+        help="Disable mouse tracking. Use this if drag-and-drop of files "
+             "into agent panes isn't working in your terminal.",
     )
     ns = parser.parse_args(raw)
     sys.exit(_cmd_default(ns))
