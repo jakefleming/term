@@ -43,6 +43,12 @@ _HELP = """\
   into target via [code]git archive HEAD | tar[/code], commits in target,
   injects the target role's prompt template (if any).
 
+[b]--yolo / --dangerously-skip-permissions[/b]
+  Pass either flag when launching term to opt-in for the session. Each
+  agent's [code]yolo_args[/code] (from defaults / ~/.config/term/config.toml)
+  are appended to its command. Bundled: claude-code gets
+  [code]--dangerously-skip-permissions[/code].
+
 [b]Status markers[/b] in the sidebar
   ·   idle           ●   running         ✓   ready
   ✗   blocked        ⏹   child exited

@@ -40,7 +40,7 @@ def _cmd_default(args: argparse.Namespace) -> int:
     if path is not None and not path.exists():
         print(f"error: {path} does not exist", file=sys.stderr)
         return 2
-    run_term(workspace_root=path)
+    run_term(workspace_root=path, yolo=args.yolo)
     return 0
 
 
@@ -105,6 +105,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("path", nargs="?", default=None,
                         help="Directory to open (defaults to current directory)")
+    parser.add_argument(
+        "--yolo", "--dangerously-skip-permissions",
+        action="store_true", dest="yolo",
+        help="Append each agent's yolo_args (e.g. claude's "
+             "--dangerously-skip-permissions). Per-agent yolo_args live in "
+             "bundled defaults or ~/.config/term/config.toml.",
+    )
     ns = parser.parse_args(raw)
     sys.exit(_cmd_default(ns))
 

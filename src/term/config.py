@@ -19,6 +19,8 @@ class AgentRecipe:
     name: str
     command: tuple[str, ...]
     one_shot: tuple[str, ...] | None = None
+    # Extra args appended when --yolo / --dangerously-skip-permissions is set.
+    yolo_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,7 @@ def _build(raw: dict) -> Config:
             name=name,
             command=tuple(body["command"]),
             one_shot=tuple(body["one_shot"]) if "one_shot" in body else None,
+            yolo_args=tuple(body.get("yolo_args", [])),
         )
 
     roles: dict[str, Role] = {}

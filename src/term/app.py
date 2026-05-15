@@ -98,12 +98,32 @@ class TermApp(App[None]):
         Binding("f12",     "open_help",             "Help",     priority=True),
     ]
 
-    def __init__(self, config: Config, workspace: Workspace) -> None:
+    def __init__(
+        self,
+        config: Config,
+        workspace: Workspace,
+        *,
+        yolo: bool = False,
+    ) -> None:
         super().__init__()
         self.config = config
         self.workspace = workspace
         self.pipeline = PipelineRun(config, workspace)
         self._current_node_id: str | None = None
+        self._yolo = yolo
+
+    def _yolo_extend(self, base: tuple[str, ...] | list[str], recipe) -> list[str]:
+        """Append yolo_args when --yolo is on.
+
+        Append (rather than splice after argv[0]) so wrapper-style commands
+        (`bash -c '...' --`) don't pick up the flags as their own. For
+        flat invocations like `claude -p {prompt}`, argparse-style CLIs
+        handle trailing flags fine.
+        """
+        cmd = list(base)
+        if self._yolo and recipe.yolo_args:
+            cmd.extend(recipe.yolo_args)
+        return cmd
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
@@ -137,12 +157,24 @@ class TermApp(App[None]):
         # Tick status states for persistent panes based on PTY activity.
         self.set_interval(1.0, self._tick_status)
 
+        if self._yolo:
+            yolo_agents = sorted(
+                name for name, r in self.config.agents.items() if r.yolo_args
+            )
+            self.notify(
+                "⚠ --dangerously-skip-permissions ON for: "
+                + (", ".join(yolo_agents) if yolo_agents else "(no agents have yolo_args)"),
+                severity="warning",
+                timeout=8,
+            )
+
     async def _mount_panel_for(self, node: NodeState, switcher: ContentSwitcher) -> None:
         pane_id = self._pane_id(node.spec.id)
         if node.spec.mode == "persistent":
             recipe = self.config.agent_for_node(node.spec)
+            command = self._yolo_extend(recipe.command, recipe)
             await switcher.mount(
-                PtyPane(recipe.command, cwd=str(node.worktree.path), id=pane_id)
+                PtyPane(command, cwd=str(node.worktree.path), id=pane_id)
             )
         else:
             label = f"{node.spec.agent}" + (
@@ -352,7 +384,7 @@ class TermApp(App[None]):
             await self.query_one(Sidebar).refresh_nodes()
             return
         prompt = self.config.prompt_for_node(node.spec)
-        cmd = [a.replace("{prompt}", prompt) for a in recipe.one_shot]
+        cmd = [a.replace("{prompt}", prompt) for a in self._yolo_extend(recipe.one_shot, recipe)]
 
         panel = self.query_one(f"#{self._pane_id(node.spec.id)}", OneShotPanel)
         panel.begin_run(cmd)
@@ -576,12 +608,12 @@ class TermApp(App[None]):
 
 # --- entrypoints -----------------------------------------------------------
 
-def run_term(workspace_root: Path | None = None) -> None:
+def run_term(workspace_root: Path | None = None, *, yolo: bool = False) -> None:
     from term.config import load_config
     start = workspace_root if workspace_root is not None else Path.cwd()
     workspace = Workspace.discover(start)
     config = load_config(workspace.root)
-    TermApp(config, workspace).run()
+    TermApp(config, workspace, yolo=yolo).run()
 
 
 def run_spike(command: Sequence[str] | None, cwd: str | None = None) -> None:
