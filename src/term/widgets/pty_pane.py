@@ -252,6 +252,26 @@ class PtyPane(Widget, can_focus=True):
         except OSError:
             pass
 
+    async def on_paste(self, event: events.Paste) -> None:
+        """Forward pastes (incl. macOS drag-and-drop of file paths into the
+        outer terminal) as bracketed paste to the child PTY. Without this,
+        Textual eats the paste event and the child never sees the text —
+        which is why dragging an image into the wrapped Claude Code pane
+        does nothing.
+        """
+        if self._proc is None or not self._proc.isalive():
+            return
+        text = event.text
+        if not text:
+            return
+        event.stop()
+        event.prevent_default()
+        data = b"\x1b[200~" + text.encode("utf-8", errors="replace") + b"\x1b[201~"
+        try:
+            os.write(self._proc.fd, data)
+        except OSError:
+            pass
+
     @property
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.isalive()
