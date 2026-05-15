@@ -45,6 +45,7 @@ from term.session import (
 )
 from term.widgets.session_picker import SessionPickerScreen, _SessionRow
 from term.widgets.command_palette import CommandPaletteScreen
+from term.widgets.confirm_screen import ConfirmScreen
 from term.widgets.diff_tray import DiffTray
 from term.widgets.help_screen import HelpScreen
 from term.widgets.one_shot_panel import OneShotPanel
@@ -446,7 +447,35 @@ class TermApp(App[None]):
         elif action == "create":
             asyncio.create_task(self._create_and_switch_session(result["name"]))
         elif action == "delete":
-            asyncio.create_task(self._delete_session(result["id"]))
+            self._confirm_delete_session(result["id"])
+
+    def _confirm_delete_session(self, session_id: str) -> None:
+        info = self._sessions.get(session_id)
+        if info is None:
+            return
+        # Build a body describing what will be destroyed.
+        sess = self._sessions.open_session(info)
+        saved = sess.load() or []
+        worktree_dir = self.workspace.root / info.worktree_root
+        wt_count = (
+            sum(1 for c in worktree_dir.iterdir() if (c / ".git").exists())
+            if worktree_dir.exists() else len(saved)
+        )
+        body = (
+            f"Delete session '{info.name}'?\n\n"
+            f"Removes {wt_count} agent worktree(s) and their branches.\n"
+            f"Any uncommitted changes in those worktrees will be lost.\n\n"
+            f"Other sessions in this workspace are unaffected."
+        )
+
+        def on_confirm(confirmed: bool | None) -> None:
+            if confirmed:
+                asyncio.create_task(self._delete_session(session_id))
+
+        self.push_screen(
+            ConfirmScreen(f"Delete '{info.name}'?", body),
+            on_confirm,
+        )
 
     def on_sidebar_session_picker_requested(
         self, _message: Sidebar.SessionPickerRequested
