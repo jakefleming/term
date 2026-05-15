@@ -44,15 +44,28 @@ def _cmd_default(_args: argparse.Namespace) -> int:
 
 _DEFAULT_PIPELINE_TOML = """\
 # term project pipeline. Edit freely.
-# Agents and roles come from ~/.config/term/config.toml + bundled defaults.
+#
+# Nodes have an `agent` (CLI to spawn) and an optional `role` (prompt
+# template). Available agents + roles come from bundled defaults plus
+# anything you add in ~/.config/term/config.toml.
+#
+# By default term opens with no nodes — press F6 (or click "+ Add agent")
+# to spawn one. If you want a starter pipeline that materializes on launch,
+# uncomment the example below.
 
 [pipeline]
-name = "spec-review-build"
-nodes = [
-  { role = "spec-writer", mode = "persistent" },
-  { role = "reviewer",    mode = "persistent" },
-  { role = "builder",     mode = "persistent" },
-]
+name = "default"
+nodes = []
+
+# Example starter pipeline:
+#
+# [pipeline]
+# name = "spec-review-build"
+# nodes = [
+#   { agent = "claude-code", role = "spec-writer", mode = "persistent" },
+#   { agent = "codex",       role = "reviewer",   mode = "persistent" },
+#   { agent = "claude-code", role = "builder",    mode = "persistent" },
+# ]
 """
 
 

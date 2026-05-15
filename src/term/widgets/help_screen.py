@@ -19,26 +19,33 @@ _HELP = """\
   F3          Edit pending files in $EDITOR
   F4          Toggle diff tray
   F5          Toggle focus: pipeline sidebar ↔ pane
+  F6          + Add agent (open spawn picker)
   F12         This help screen
 
 [b]Palette commands[/b]  (open with F1)
-  spawn <role>            Append a persistent node
-  spawn -o <role>         Append a one-shot node
-  handoff                 Same as F2
-  handoff <node>          Reroute: focused → <node>
-  edit                    Same as F3
-  rerun                   Re-trigger a one-shot node
-  quit                    Exit
+  spawn                              Open the spawn picker
+  spawn [-o] <agent> [<role>]        Spawn directly
+  handoff                            Same as F2
+  handoff <node>                     Reroute: focused → <node>
+  swap-agent <agent>                 Replace focused node's CLI
+  swap-role <role|none>              Change focused node's prompt template
+  edit                               Same as F3
+  rerun                              Re-trigger a one-shot node
+  quit                               Exit
+
+[b]Concepts[/b]
+  A node = agent (CLI to run) + optional role (prompt template) + mode
+  (persistent / one-shot). Agent and role are independent — same agent can
+  play any role, same role can run on any agent.
+
+  Each node owns a [i]git worktree[/i] under .term/worktrees/<node-id> on
+  branch term/node/<node-id>. Handoff snapshots source's tracked files
+  into target via [code]git archive HEAD | tar[/code], commits in target,
+  injects the target role's prompt template (if any).
 
 [b]Status markers[/b] in the sidebar
   ·   idle           ●   running         ✓   ready
   ✗   blocked        ⏹   child exited
-
-[b]Concepts[/b]
-  Each node owns a [i]git worktree[/i] under .term/worktrees/<node-id> on
-  branch term/node/<node-id>. Handoff = snapshot source's tracked files
-  into target via [code]git archive HEAD | tar[/code], commit in target,
-  inject the target role's prompt template.
 
 [dim]press esc, q, or F12 to close[/dim]
 """

@@ -30,7 +30,7 @@ from typing import Sequence
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import ContentSwitcher, Footer
+from textual.widgets import ContentSwitcher, Footer, Static
 
 from term.config import Config, NodeSpec
 from term.handoff import handoff as do_handoff
@@ -41,6 +41,7 @@ from term.widgets.help_screen import HelpScreen
 from term.widgets.one_shot_panel import OneShotPanel
 from term.widgets.pty_pane import PtyPane
 from term.widgets.sidebar import Sidebar
+from term.widgets.spawn_picker import SpawnPickerScreen
 from term.workspace import Workspace, git
 
 
@@ -75,6 +76,12 @@ class TermApp(App[None]):
     PtyPane, OneShotPanel { width: 100%; height: 100%; }
     ContentSwitcher#panes { width: 1fr; height: 100%; background: $surface; }
     DiffTray.hidden { display: none; }
+    #empty-state {
+        width: 100%;
+        height: 100%;
+        content-align: center middle;
+        color: $text-muted;
+    }
     """
 
     # Time after which a persistent pane with no recent bytes is "idle."
@@ -87,6 +94,7 @@ class TermApp(App[None]):
         Binding("f3",      "edit_artifact",         "Edit",     priority=True),
         Binding("f4",      "toggle_diff",           "Diff",     priority=True),
         Binding("f5",      "toggle_sidebar_focus",  "Pipeline", priority=True),
+        Binding("f6",      "add_agent",             "+ Add",    priority=True),
         Binding("f12",     "open_help",             "Help",     priority=True),
     ]
 
@@ -100,7 +108,13 @@ class TermApp(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="body"):
             yield Sidebar(self.pipeline, id="sidebar")
-            yield ContentSwitcher(id="panes")
+            with ContentSwitcher(id="panes", initial="empty-state"):
+                yield Static(
+                    "No agents yet.\n\n"
+                    "F6 or '+ Add agent' to spawn one.\n"
+                    "F12 for help.",
+                    id="empty-state",
+                )
             yield DiffTray(id="diff-tray")
         yield Footer()
 
@@ -116,6 +130,9 @@ class TermApp(App[None]):
         first = next(iter(self.pipeline.nodes), None)
         if first is not None:
             self._focus_node(first.spec.id)
+        else:
+            # No nodes: park focus on the sidebar so user can keyboard-nav.
+            self.query_one(Sidebar).focus_list()
 
         # Tick status states for persistent panes based on PTY activity.
         self.set_interval(1.0, self._tick_status)
@@ -123,13 +140,16 @@ class TermApp(App[None]):
     async def _mount_panel_for(self, node: NodeState, switcher: ContentSwitcher) -> None:
         pane_id = self._pane_id(node.spec.id)
         if node.spec.mode == "persistent":
-            recipe = self.config.agent_for_role(node.spec.role)
+            recipe = self.config.agent_for_node(node.spec)
             await switcher.mount(
                 PtyPane(recipe.command, cwd=str(node.worktree.path), id=pane_id)
             )
         else:
+            label = f"{node.spec.agent}" + (
+                f" · {node.spec.role}" if node.spec.role else ""
+            )
             await switcher.mount(
-                OneShotPanel(node.spec.id, node.spec.role, id=pane_id)
+                OneShotPanel(node.spec.id, label, id=pane_id)
             )
 
     def _pane_id(self, node_id: str) -> str:
@@ -167,6 +187,63 @@ class TermApp(App[None]):
 
     def on_sidebar_node_selected(self, message: Sidebar.NodeSelected) -> None:
         self._focus_node(message.node_id)
+
+    def on_sidebar_add_requested(self, _message: Sidebar.AddRequested) -> None:
+        self.action_add_agent()
+
+    def action_add_agent(self) -> None:
+        agents = sorted(self.config.agents.keys())
+        roles = sorted(self.config.roles.keys())
+        if not agents:
+            self.notify("no agents configured", severity="error")
+            return
+        self.push_screen(
+            SpawnPickerScreen(agents, roles),
+            self._on_picker_dismissed,
+        )
+
+    def _on_picker_dismissed(self, result: dict | None) -> None:
+        if not result:
+            return
+        asyncio.create_task(
+            self._spawn_node(
+                agent=result["agent"],
+                role=result.get("role"),
+                mode=result.get("mode", "persistent"),
+            )
+        )
+
+    async def _spawn_node(
+        self,
+        *,
+        agent: str,
+        role: str | None,
+        mode: str,
+    ) -> str | None:
+        if agent not in self.config.agents:
+            self.notify(f"unknown agent: {agent!r}", severity="error")
+            return None
+        if role is not None and role not in self.config.roles:
+            self.notify(f"unknown role: {role!r}", severity="error")
+            return None
+        base = role or agent
+        node_id = base
+        i = 2
+        existing = {n.spec.id for n in self.pipeline.nodes}
+        while node_id in existing:
+            node_id = f"{base}-{i}"
+            i += 1
+        spec = NodeSpec(id=node_id, agent=agent, role=role, mode=mode)
+        worktree = self.workspace.ensure_worktree(node_id)
+        state = NodeState(spec=spec, worktree=worktree)
+        self.pipeline.nodes.append(state)
+        switcher = self.query_one("#panes", ContentSwitcher)
+        await self._mount_panel_for(state, switcher)
+        await self.query_one(Sidebar).refresh_nodes()
+        self._focus_node(node_id)
+        suffix = f" · {role}" if role else ""
+        self.notify(f"spawned {node_id} ({agent}{suffix}, {mode})")
+        return node_id
 
     def action_toggle_sidebar_focus(self) -> None:
         sidebar = self.query_one(Sidebar)
@@ -234,11 +311,11 @@ class TermApp(App[None]):
         self.notify(result.message, timeout=4)
 
         if target.spec.mode == "persistent":
-            role = self.config.roles[target.spec.role]
-            if role.prompt_template:
+            prompt = self.config.prompt_for_node(target.spec)
+            if prompt:
                 try:
                     pane = self.query_one(f"#{self._pane_id(target.spec.id)}", PtyPane)
-                    self._inject_prompt(pane, role.prompt_template)
+                    self._inject_prompt(pane, prompt)
                 except Exception:
                     pass
             self._focus_node(target.spec.id)
@@ -264,7 +341,7 @@ class TermApp(App[None]):
     # --- one-shot execution -------------------------------------------------
 
     async def _run_one_shot(self, node: NodeState) -> None:
-        recipe = self.config.agent_for_role(node.spec.role)
+        recipe = self.config.agent_for_node(node.spec)
         if not recipe.one_shot:
             self.notify(
                 f"agent {recipe.name!r} has no one_shot recipe — set "
@@ -274,8 +351,7 @@ class TermApp(App[None]):
             node.status = "blocked"
             await self.query_one(Sidebar).refresh_nodes()
             return
-        role = self.config.roles[node.spec.role]
-        prompt = role.prompt_template
+        prompt = self.config.prompt_for_node(node.spec)
         cmd = [a.replace("{prompt}", prompt) for a in recipe.one_shot]
 
         panel = self.query_one(f"#{self._pane_id(node.spec.id)}", OneShotPanel)
@@ -360,11 +436,13 @@ class TermApp(App[None]):
             return
         verb, args = parts[0], parts[1:]
         handler = {
-            "spawn":   self._cmd_spawn,
-            "handoff": self._cmd_handoff,
-            "edit":    self._cmd_edit,
-            "rerun":   self._cmd_rerun,
-            "quit":    self._cmd_quit,
+            "spawn":      self._cmd_spawn,
+            "handoff":    self._cmd_handoff,
+            "edit":       self._cmd_edit,
+            "rerun":      self._cmd_rerun,
+            "swap-agent": self._cmd_swap_agent,
+            "swap-role":  self._cmd_swap_role,
+            "quit":       self._cmd_quit,
         }.get(verb)
         if handler is None:
             self.notify(f"unknown command: {verb}", severity="error")
@@ -372,6 +450,17 @@ class TermApp(App[None]):
         await handler(args)
 
     async def _cmd_spawn(self, args: list[str]) -> None:
+        """`:spawn` with no args opens the picker. With args, parses them.
+
+        Forms:
+          spawn                          → open picker modal
+          spawn <agent>                  → agent only, no role, persistent
+          spawn <agent> <role>           → agent + role, persistent
+          spawn -o <agent> [<role>]      → one-shot
+        """
+        if not args:
+            self.action_add_agent()
+            return
         mode = "persistent"
         positional: list[str] = []
         for a in args:
@@ -379,35 +468,74 @@ class TermApp(App[None]):
                 mode = "one-shot"
             else:
                 positional.append(a)
-        if len(positional) != 1:
-            self.notify("usage: spawn [-o] <role>", severity="error")
-            return
-        role = positional[0]
-        if role not in self.config.roles:
+        if len(positional) == 1:
+            agent, role = positional[0], None
+        elif len(positional) == 2:
+            agent, role = positional[0], positional[1]
+        else:
             self.notify(
-                f"unknown role: {role!r} (available: "
-                f"{', '.join(sorted(self.config.roles))})",
+                "usage: spawn [-o] <agent> [<role>]  (or `spawn` with no args)",
                 severity="error",
             )
             return
-        # generate a unique node id
-        base = role
-        node_id = base
-        i = 2
-        existing = {n.spec.id for n in self.pipeline.nodes}
-        while node_id in existing:
-            node_id = f"{base}-{i}"
-            i += 1
-        spec = NodeSpec(id=node_id, role=role, mode=mode)
-        worktree = self.workspace.ensure_worktree(node_id)
-        state = NodeState(spec=spec, worktree=worktree)
-        self.pipeline.nodes.append(state)
+        await self._spawn_node(agent=agent, role=role, mode=mode)
 
+    async def _cmd_swap_agent(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.notify("usage: swap-agent <agent>", severity="error")
+            return
+        if self._current_node_id is None:
+            self.notify("no node focused", severity="warning")
+            return
+        new_agent = args[0]
+        if new_agent not in self.config.agents:
+            self.notify(f"unknown agent: {new_agent!r}", severity="error")
+            return
+        node = self.pipeline.node(self._current_node_id)
+        if node.spec.agent == new_agent:
+            self.notify(f"already {new_agent}")
+            return
+        node.spec = NodeSpec(
+            id=node.spec.id, agent=new_agent, role=node.spec.role, mode=node.spec.mode
+        )
+        # Tear down and re-mount the pane / panel.
         switcher = self.query_one("#panes", ContentSwitcher)
-        await self._mount_panel_for(state, switcher)
+        pane_id = self._pane_id(node.spec.id)
+        try:
+            old = self.query_one(f"#{pane_id}")
+            await old.remove()
+        except Exception:
+            pass
+        await self._mount_panel_for(node, switcher)
+        node.status = "idle"
         await self.query_one(Sidebar).refresh_nodes()
-        self._focus_node(node_id)
-        self.notify(f"spawned {node_id} ({mode})")
+        self._focus_node(node.spec.id)
+        self.notify(f"swapped {node.spec.id} → agent {new_agent}")
+
+    async def _cmd_swap_role(self, args: list[str]) -> None:
+        if len(args) != 1:
+            self.notify("usage: swap-role <role|none>", severity="error")
+            return
+        if self._current_node_id is None:
+            self.notify("no node focused", severity="warning")
+            return
+        raw = args[0]
+        new_role: str | None
+        if raw in ("none", "blank", "_blank"):
+            new_role = None
+        else:
+            new_role = raw
+            if new_role not in self.config.roles:
+                self.notify(f"unknown role: {new_role!r}", severity="error")
+                return
+        node = self.pipeline.node(self._current_node_id)
+        node.spec = NodeSpec(
+            id=node.spec.id, agent=node.spec.agent, role=new_role, mode=node.spec.mode
+        )
+        await self.query_one(Sidebar).refresh_nodes()
+        self.notify(
+            f"swapped {node.spec.id} → role {new_role or 'blank'}"
+        )
 
     async def _cmd_handoff(self, args: list[str]) -> None:
         if self._current_node_id is None:

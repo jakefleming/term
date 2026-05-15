@@ -1,5 +1,13 @@
 # Bundled defaults for term. Merged under user config (~/.config/term/config.toml)
 # and project pipeline (<repo>/.term/pipeline.toml).
+#
+# Agents = CLI integrations. Roles = optional prompt-template wrappers.
+# In a node you pick both independently: `agent = "claude-code"` plus
+# (optionally) `role = "reviewer"`. The role's `agent` field is only used
+# as a default if a node doesn't specify an agent explicitly.
+#
+# By default term starts with no nodes — build the pipeline as you go via
+# F6 / "+ Add agent" / `:spawn`.
 
 [agents.claude-code]
 command = ["claude"]
@@ -25,9 +33,5 @@ agent = "claude-code"
 prompt_template = """Implement SPEC.md, addressing the concerns in REVIEW.md. Make the changes directly in this worktree. Commit logically when you finish a unit of work."""
 
 [pipeline]
-name = "spec-review-build"
-nodes = [
-  { role = "spec-writer", mode = "persistent" },
-  { role = "reviewer",    mode = "persistent" },
-  { role = "builder",     mode = "persistent" },
-]
+name = "default"
+nodes = []

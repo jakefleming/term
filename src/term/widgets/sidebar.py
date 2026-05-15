@@ -1,6 +1,8 @@
-"""Pipeline sidebar: vertical list of nodes with status markers."""
+"""Pipeline sidebar: vertical list of nodes plus a + Add affordance."""
 
 from __future__ import annotations
+
+import asyncio
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -20,11 +22,11 @@ _STATUS_MARK = {
 
 
 class Sidebar(Vertical):
-    """Shows the pipeline. Selecting a node posts NodeSelected."""
+    """Shows the pipeline plus an "+ Add agent" entry at the bottom."""
 
     DEFAULT_CSS = """
     Sidebar {
-        width: 28;
+        width: 30;
         background: $boost;
         border-right: solid $primary;
         padding: 0 1;
@@ -45,6 +47,10 @@ class Sidebar(Vertical):
     Sidebar ListItem.--highlight {
         background: $primary 50%;
     }
+    Sidebar ListItem.add-row Label {
+        color: $accent;
+        text-style: bold;
+    }
     """
 
     class NodeSelected(Message):
@@ -52,9 +58,14 @@ class Sidebar(Vertical):
             super().__init__()
             self.node_id = node_id
 
+    class AddRequested(Message):
+        """Posted when the user activates the '+ Add agent' row."""
+        pass
+
     def __init__(self, pipeline: PipelineRun, id: str | None = None) -> None:
         super().__init__(id=id)
         self.pipeline = pipeline
+        self._refresh_lock: asyncio.Lock | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(f"▸ {self.pipeline.config.pipeline.name}", id="sidebar-title")
@@ -64,22 +75,36 @@ class Sidebar(Vertical):
         await self.refresh_nodes()
 
     async def refresh_nodes(self) -> None:
-        lv = self.query_one("#node-list", ListView)
-        await lv.clear()
-        for node in self.pipeline.nodes:
-            mark = _STATUS_MARK.get(node.status, "?")
-            role = self.pipeline.config.roles[node.spec.role]
-            agent = role.agent
-            mode_glyph = "▶" if node.spec.mode == "persistent" else "⚡"
-            label = f"{mark} {mode_glyph} {node.spec.id}\n    {agent}"
-            await lv.append(ListItem(Label(label)))
+        # Serialize concurrent refreshes (status tick + handoff + spawn can
+        # all hit us at once; without a lock the ListView clear/append
+        # interleaves and trips DuplicateIds).
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+        async with self._refresh_lock:
+            lv = self.query_one("#node-list", ListView)
+            await lv.clear()
+            for node in self.pipeline.nodes:
+                mark = _STATUS_MARK.get(node.status, "?")
+                mode_glyph = "▶" if node.spec.mode == "persistent" else "⚡"
+                agent = node.spec.agent
+                role = node.spec.role or "—"
+                label = f"{mark} {mode_glyph} {node.spec.id}\n    {agent}  ·  {role}"
+                await lv.append(ListItem(Label(label)))
+            add_item = ListItem(Label("+ Add agent"))
+            add_item.add_class("add-row")
+            await lv.append(add_item)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        index = event.list_view.index or 0
-        if 0 <= index < len(self.pipeline.nodes):
-            self.post_message(
-                self.NodeSelected(self.pipeline.nodes[index].spec.id)
-            )
+        index = event.list_view.index
+        if index is None:
+            return
+        if index >= len(self.pipeline.nodes):
+            # The trailing "+ Add agent" row.
+            self.post_message(self.AddRequested())
+            return
+        self.post_message(
+            self.NodeSelected(self.pipeline.nodes[index].spec.id)
+        )
 
     def focus_list(self) -> None:
         self.query_one("#node-list", ListView).focus()

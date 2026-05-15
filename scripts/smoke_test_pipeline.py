@@ -37,12 +37,28 @@ def main() -> int:
         assert (ws.term_dir / ".gitignore").read_text().strip() == "worktrees/"
         print("  init OK")
 
+        # Bundled defaults now start with an empty pipeline; write a starter
+        # spec-review-build pipeline for this test.
+        (ws.term_dir / "pipeline.toml").write_text("""
+[pipeline]
+name = "spec-review-build"
+nodes = [
+  { role = "spec-writer", mode = "persistent" },
+  { role = "reviewer",    mode = "persistent" },
+  { role = "builder",     mode = "persistent" },
+]
+""")
+
         cfg = load_config(ws.root)
         assert "claude-code" in cfg.agents
         assert "codex" in cfg.agents
         assert len(cfg.pipeline.nodes) == 3
         node_ids = [n.id for n in cfg.pipeline.nodes]
+        # Verify backward-compat agent derivation from role.
+        agents = [n.agent for n in cfg.pipeline.nodes]
+        assert agents == ["claude-code", "codex", "claude-code"], agents
         print(f"  loaded pipeline nodes: {node_ids}")
+        print(f"  agents derived from roles: {agents}")
 
         run = PipelineRun(cfg, ws)
         run.initialize()

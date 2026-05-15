@@ -30,8 +30,10 @@ class Role:
 
 @dataclass(frozen=True)
 class NodeSpec:
+    """A node is an agent (CLI) + optional role (prompt template) + mode."""
     id: str
-    role: str
+    agent: str
+    role: str | None = None
     mode: str = "persistent"  # "persistent" | "one-shot"
 
 
@@ -47,9 +49,14 @@ class Config:
     roles: dict[str, Role]
     pipeline: Pipeline
 
-    def agent_for_role(self, role_name: str) -> AgentRecipe:
-        role = self.roles[role_name]
-        return self.agents[role.agent]
+    def agent_for_node(self, node: "NodeSpec") -> AgentRecipe:
+        return self.agents[node.agent]
+
+    def prompt_for_node(self, node: "NodeSpec") -> str:
+        """The role's prompt template, or '' if the node has no role."""
+        if node.role and node.role in self.roles:
+            return self.roles[node.role].prompt_template
+        return ""
 
 
 def user_config_path() -> Path:
@@ -106,10 +113,23 @@ def _build(raw: dict) -> Config:
     nodes: list[NodeSpec] = []
     used_ids: set[str] = set()
     for n in pipe.get("nodes", []):
-        role_name = n["role"]
-        if role_name not in roles:
+        role_name = n.get("role")
+        agent_name = n.get("agent")
+        # Backward compat: `role` alone is allowed; agent derived from role.
+        if not agent_name:
+            if not role_name:
+                raise ValueError(
+                    "pipeline node must specify `agent` (and optionally `role`)"
+                )
+            if role_name not in roles:
+                raise ValueError(f"pipeline references unknown role: {role_name!r}")
+            agent_name = roles[role_name].agent
+        if agent_name not in agents:
+            raise ValueError(f"pipeline references unknown agent: {agent_name!r}")
+        if role_name and role_name not in roles:
             raise ValueError(f"pipeline references unknown role: {role_name!r}")
-        base_id = n.get("id", role_name)
+
+        base_id = n.get("id") or role_name or agent_name
         node_id = base_id
         suffix = 2
         while node_id in used_ids:
@@ -119,7 +139,7 @@ def _build(raw: dict) -> Config:
         mode = n.get("mode", "persistent")
         if mode not in ("persistent", "one-shot"):
             raise ValueError(f"node {node_id!r} has invalid mode {mode!r}")
-        nodes.append(NodeSpec(id=node_id, role=role_name, mode=mode))
+        nodes.append(NodeSpec(id=node_id, agent=agent_name, role=role_name, mode=mode))
 
     for role in roles.values():
         if role.agent not in agents:

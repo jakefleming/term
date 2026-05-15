@@ -69,8 +69,14 @@ async def _drive() -> int:
             # 3. Stage a change in p1's worktree, then handoff p1 → o1 (one-shot).
             (p1.worktree.path / "ARTIFACT.txt").write_text("hello\n")
             await app.action_handoff()
-            await pilot.pause(0.6)  # let subprocess finish
-
+            # The one-shot subprocess runs concurrently; don't use pilot.pause
+            # (waits for screen-stability and the status tick keeps it busy).
+            await asyncio.sleep(0.6)
+            # If status hasn't reached ready, give it more time / loop.
+            for _ in range(20):
+                if o1.status == "ready":
+                    break
+                await asyncio.sleep(0.1)
             assert (o1.worktree.path / "ARTIFACT.txt").exists(), \
                 "handoff didn't deliver artifact to o1"
             assert o1.status == "ready", f"expected ready, got {o1.status!r}"
@@ -81,7 +87,8 @@ async def _drive() -> int:
             print(f"  one-shot ran; status={o1.status}")
 
             # 4. Spawn a new node via the command-palette dispatcher.
-            await app._dispatch_command("spawn scribe")
+            # New form: `spawn <agent> <role>`. Use printer + scribe.
+            await app._dispatch_command("spawn printer scribe")
             assert len(app.pipeline.nodes) == 3
             new_id = app.pipeline.nodes[-1].spec.id
             assert new_id.startswith("scribe"), new_id
@@ -90,9 +97,9 @@ async def _drive() -> int:
 
             # 5. Reroute: focus p1, then `handoff <new_id>`.
             app._focus_node("p1")
-            await pilot.pause(0.1)
+            await asyncio.sleep(0.1)
             await app._dispatch_command(f"handoff {new_id}")
-            await pilot.pause(0.3)
+            await asyncio.sleep(0.3)
             assert (
                 app.pipeline.node(new_id).worktree.path / "ARTIFACT.txt"
             ).exists(), f"rerouted handoff didn't reach {new_id}"
