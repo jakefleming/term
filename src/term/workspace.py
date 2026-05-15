@@ -1,8 +1,9 @@
 """Git worktree management for term.
 
-A `Workspace` wraps a git repo root and maintains a `.term/worktrees/<node-id>/`
-directory per node, each on its own `term/node/<node-id>` branch. We shell out
-to `git` directly — no pygit2 / GitPython — for legibility of failures.
+A `Workspace` wraps a git repo root. Each session (see term/session.py)
+manages its own worktrees under `.term/sessions/<id>/worktrees/<node-id>/`
+or a legacy `.term/worktrees/<node-id>/` location. Workspace exposes the
+git-shell-out machinery; Sessions own the layout conventions.
 """
 
 from __future__ import annotations
@@ -77,14 +78,11 @@ def git(
 
 
 class Workspace:
-    """A git repo plus a `.term/` directory holding per-node worktrees."""
-
-    BRANCH_PREFIX = "term/node/"
+    """A git repo root + `.term/` metadata directory."""
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
         self.term_dir = self.root / ".term"
-        self.worktrees_dir = self.term_dir / "worktrees"
 
     @classmethod
     def discover(cls, start: Path) -> "Workspace":
@@ -109,12 +107,7 @@ class Workspace:
             subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
 
         ws = cls(root)
-        ws.term_dir.mkdir(exist_ok=True)
-        ws.worktrees_dir.mkdir(exist_ok=True)
-
-        gi = ws.term_dir / ".gitignore"
-        if not gi.exists():
-            gi.write_text("worktrees/\n")
+        ws.prepare()
 
         # Repo must have at least one commit so worktrees can branch off it.
         has_head = subprocess.run(
@@ -122,39 +115,42 @@ class Workspace:
             cwd=str(root), capture_output=True,
         ).returncode == 0
         if not has_head:
-            (ws.term_dir / "README").write_text(
-                "term workspace metadata. Worktrees live under worktrees/.\n"
-            )
-            git(["add", ".term/.gitignore", ".term/README"], cwd=root)
+            git(["add", ".term/.gitignore"], cwd=root)
             git(["commit", "-q", "-m", "term: initialize workspace"], cwd=root)
 
         return ws
 
-    def branch_for(self, node_id: str) -> str:
-        return f"{self.BRANCH_PREFIX}{node_id}"
-
-    def path_for(self, node_id: str) -> Path:
-        return self.worktrees_dir / node_id
-
     def prepare(self) -> None:
         """Idempotent: ensure .term/ scaffolding exists. No git side effects."""
         self.term_dir.mkdir(exist_ok=True)
-        self.worktrees_dir.mkdir(exist_ok=True)
         gi = self.term_dir / ".gitignore"
-        if not gi.exists():
-            gi.write_text("worktrees/\n")
+        # Ignore everything inside .term/ except pipeline.toml and the
+        # .gitignore itself. Catches worktrees/, sessions/, session.json,
+        # README — all internal runtime state.
+        desired = "*\n!.gitignore\n!pipeline.toml\n"
+        if not gi.exists() or gi.read_text() != desired:
+            gi.write_text(desired)
 
-    def ensure_worktree(self, node_id: str, base: str = "HEAD") -> Worktree:
-        """Create the worktree if missing; return its handle either way."""
-        path = self.path_for(node_id)
-        branch = self.branch_for(node_id)
+    def ensure_worktree_at(
+        self,
+        path: Path,
+        branch: str,
+        *,
+        node_id: str | None = None,
+        base: str = "HEAD",
+    ) -> Worktree:
+        """Create a worktree at `path` on `branch`. Idempotent.
+
+        Caller picks the path and branch — Session owns the layout
+        conventions, Workspace just shells out to `git worktree`.
+        """
+        nid = node_id or path.name
         if path.exists() and (path / ".git").exists():
-            return Worktree(node_id=node_id, path=path, branch=branch)
+            return Worktree(node_id=nid, path=path, branch=branch)
 
         self.prepare()
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists() and not (path / ".git").exists():
-            # stale dir from prior abandoned setup
             shutil.rmtree(path)
 
         branch_exists = subprocess.run(
@@ -165,12 +161,12 @@ class Workspace:
         if branch_exists:
             git(["worktree", "add", str(path), branch], cwd=self.root)
         else:
-            git(["worktree", "add", "-b", branch, str(path), base], cwd=self.root)
+            git(["worktree", "add", "-b", branch, str(path), base],
+                cwd=self.root)
 
-        return Worktree(node_id=node_id, path=path, branch=branch)
+        return Worktree(node_id=nid, path=path, branch=branch)
 
-    def remove_worktree(self, node_id: str, force: bool = False) -> None:
-        path = self.path_for(node_id)
+    def remove_worktree_at(self, path: Path, *, force: bool = False) -> None:
         if not path.exists():
             return
         args = ["worktree", "remove"]

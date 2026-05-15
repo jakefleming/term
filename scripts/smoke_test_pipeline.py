@@ -34,7 +34,8 @@ def main() -> int:
 
         ws = Workspace.init(tmp)
         assert ws.term_dir.is_dir()
-        assert (ws.term_dir / ".gitignore").read_text().strip() == "worktrees/"
+        # Gitignore now ignores everything in .term/ except pipeline.toml.
+        assert "*" in (ws.term_dir / ".gitignore").read_text()
         print("  init OK")
 
         # Bundled defaults now start with an empty pipeline; write a starter
@@ -60,8 +61,13 @@ nodes = [
         print(f"  loaded pipeline nodes: {node_ids}")
         print(f"  agents derived from roles: {agents}")
 
+        from term.session import SessionManager, seed_pipeline_from_config
+        sm = SessionManager(ws)
+        sm.migrate_legacy()
+        info = sm.get_or_create_default()
+        session = sm.open_session(info)
         run = PipelineRun(cfg, ws)
-        run.initialize()
+        seed_pipeline_from_config(run, session)
         assert len(run.nodes) == 3
         for n in run.nodes:
             assert n.worktree.path.is_dir()

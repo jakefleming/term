@@ -36,7 +36,14 @@ from textual.widgets import ContentSwitcher, Footer, Static
 from term.config import Config, NodeSpec
 from term.handoff import handoff as do_handoff
 from term.pipeline import NodeState, PipelineRun
-from term.session import Session, restore_pipeline
+from term.session import (
+    Session,
+    SessionInfo,
+    SessionManager,
+    restore_pipeline,
+    seed_pipeline_from_config,
+)
+from term.widgets.session_picker import SessionPickerScreen, _SessionRow
 from term.widgets.command_palette import CommandPaletteScreen
 from term.widgets.diff_tray import DiffTray
 from term.widgets.help_screen import HelpScreen
@@ -98,6 +105,7 @@ class TermApp(App[None]):
         Binding("f5",      "toggle_sidebar_focus",  "Pipeline", priority=True),
         Binding("f6",      "add_agent",             "+ Add",    priority=True),
         Binding("f8",      "toggle_mouse",          "Mouse",    priority=True),
+        Binding("f9",      "open_session_picker",   "Sessions", priority=True),
         Binding("f12",     "open_help",             "Help",     priority=True),
     ]
 
@@ -118,7 +126,8 @@ class TermApp(App[None]):
         # Default mouse on; F8 toggles it off mid-session for native text
         # selection. Drag-drop works in either mode (handled at App level).
         self._mouse = True if mouse is None else mouse
-        self._session = Session(workspace)
+        self._sessions = SessionManager(workspace)
+        self._session: Session | None = None  # set in on_mount
 
     async def on_paste(self, event) -> None:
         """App-level paste handler.
@@ -180,6 +189,7 @@ class TermApp(App[None]):
                 yield Static(
                     "No agents yet.\n\n"
                     "F6 or '+ Add agent' to spawn one.\n"
+                    "F9 to switch sessions.\n"
                     "F12 for help.",
                     id="empty-state",
                 )
@@ -187,25 +197,31 @@ class TermApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
-        # Restore prior session if one exists; else initialize from pipeline.toml.
+        # One-time migration from pre-multi-session layout.
+        self._sessions.migrate_legacy()
+        info = self._sessions.get_or_create_default()
+        self._session = self._sessions.open_session(info)
+        self.query_one(Sidebar).set_session_name(info.name)
+
+        # Load this session's pipeline, or seed from config if it's new.
         saved = self._session.load()
         if saved is not None:
             restored, skipped = restore_pipeline(
-                self.pipeline, saved,
+                self.pipeline, self._session, saved,
                 config_role_names=set(self.config.roles),
                 config_agent_names=set(self.config.agents),
             )
             if restored:
                 self.notify(
-                    f"resumed {restored} agent{'s' if restored != 1 else ''} from prior session"
+                    f"resumed {restored} agent{'s' if restored != 1 else ''}"
+                    f" from session '{info.name}'"
                     + (f" ({skipped} skipped)" if skipped else ""),
                     timeout=4,
                 )
             else:
-                # All saved entries were invalid → fall back to declared pipeline.
-                self.pipeline.initialize()
+                seed_pipeline_from_config(self.pipeline, self._session)
         else:
-            self.pipeline.initialize()
+            seed_pipeline_from_config(self.pipeline, self._session)
 
         switcher = self.query_one("#panes", ContentSwitcher)
         for node in self.pipeline.nodes:
@@ -339,7 +355,12 @@ class TermApp(App[None]):
             node_id = f"{base}-{i}"
             i += 1
         spec = NodeSpec(id=node_id, agent=agent, role=role, mode=mode)
-        worktree = self.workspace.ensure_worktree(node_id)
+        assert self._session is not None
+        worktree = self.workspace.ensure_worktree_at(
+            self._session.path_for(node_id),
+            self._session.branch_for(node_id),
+            node_id=node_id,
+        )
         state = NodeState(spec=spec, worktree=worktree)
         self.pipeline.nodes.append(state)
         switcher = self.query_one("#panes", ContentSwitcher)
@@ -375,7 +396,9 @@ class TermApp(App[None]):
         )
 
     def _save_session(self) -> None:
-        """Persist current pipeline shape to .term/session.json."""
+        """Persist current pipeline shape to this session's .json."""
+        if self._session is None:
+            return
         try:
             self._session.save(self.pipeline, self._current_node_id)
         except Exception:
@@ -395,6 +418,106 @@ class TermApp(App[None]):
 
     def action_open_help(self) -> None:
         self.push_screen(HelpScreen())
+
+    def action_open_session_picker(self) -> None:
+        rows = []
+        current = self._sessions.current_id()
+        for info in self._sessions.list():
+            # Count nodes in each session by reading its session.json directly.
+            sess = self._sessions.open_session(info)
+            saved = sess.load() or []
+            rows.append(_SessionRow(
+                id=info.id,
+                name=info.name,
+                node_count=len(saved),
+                is_current=(info.id == current),
+            ))
+        self.push_screen(
+            SessionPickerScreen(rows),
+            self._on_session_picker_dismissed,
+        )
+
+    def _on_session_picker_dismissed(self, result: dict | None) -> None:
+        if not result:
+            return
+        action = result.get("action")
+        if action == "switch":
+            asyncio.create_task(self._switch_session(result["id"]))
+        elif action == "create":
+            asyncio.create_task(self._create_and_switch_session(result["name"]))
+        elif action == "delete":
+            asyncio.create_task(self._delete_session(result["id"]))
+
+    def on_sidebar_session_picker_requested(
+        self, _message: Sidebar.SessionPickerRequested
+    ) -> None:
+        self.action_open_session_picker()
+
+    async def _switch_session(self, session_id: str) -> None:
+        info = self._sessions.get(session_id)
+        if info is None:
+            self.notify(f"unknown session: {session_id}", severity="error")
+            return
+        if self._session is not None and info.id == self._session.info.id:
+            return  # already active
+        await self._teardown_current_session()
+        self._sessions.set_current(info.id)
+        self._session = self._sessions.open_session(info)
+        self.query_one(Sidebar).set_session_name(info.name)
+
+        saved = self._session.load()
+        if saved:
+            restore_pipeline(
+                self.pipeline, self._session, saved,
+                config_role_names=set(self.config.roles),
+                config_agent_names=set(self.config.agents),
+            )
+        else:
+            # New empty session.
+            pass
+
+        switcher = self.query_one("#panes", ContentSwitcher)
+        for node in self.pipeline.nodes:
+            await self._mount_panel_for(node, switcher)
+            node.seen = True
+        await self.query_one(Sidebar).refresh_nodes()
+        first = next(iter(self.pipeline.nodes), None)
+        if first is not None:
+            self._focus_node(first.spec.id)
+        else:
+            self._current_node_id = None
+            switcher.current = "empty-state"
+        self.notify(f"switched to session '{info.name}'")
+        self._save_session()
+
+    async def _create_and_switch_session(self, name: str) -> None:
+        info = self._sessions.create(name, as_current=False)
+        await self._switch_session(info.id)
+
+    async def _delete_session(self, session_id: str) -> None:
+        info = self._sessions.get(session_id)
+        if info is None:
+            return
+        if self._session is not None and info.id == self._session.info.id:
+            self.notify("can't delete the active session", severity="warning")
+            return
+        self._sessions.delete(info.id)
+        self.notify(f"deleted session '{info.name}'")
+
+    async def _teardown_current_session(self) -> None:
+        """Save the current session, then unmount its panes and clear pipeline."""
+        self._save_session()
+        switcher = self.query_one("#panes", ContentSwitcher)
+        switcher.current = "empty-state"
+        # Remove all per-node widgets (PtyPane or OneShotPanel).
+        for node in list(self.pipeline.nodes):
+            try:
+                pane = self.query_one(f"#{self._pane_id(node.spec.id)}")
+                await pane.remove()
+            except Exception:
+                pass
+        self.pipeline.reset()
+        self._current_node_id = None
 
     async def _tick_status(self) -> None:
         """Update persistent-node statuses based on PTY activity."""
@@ -575,15 +698,18 @@ class TermApp(App[None]):
             return
         verb, args = parts[0], parts[1:]
         handler = {
-            "spawn":         self._cmd_spawn,
-            "handoff":       self._cmd_handoff,
-            "edit":          self._cmd_edit,
-            "rerun":         self._cmd_rerun,
-            "resume":        self._cmd_resume,
-            "swap-agent":    self._cmd_swap_agent,
-            "swap-role":     self._cmd_swap_role,
-            "reset-session": self._cmd_reset_session,
-            "quit":          self._cmd_quit,
+            "spawn":          self._cmd_spawn,
+            "handoff":        self._cmd_handoff,
+            "edit":           self._cmd_edit,
+            "rerun":          self._cmd_rerun,
+            "resume":         self._cmd_resume,
+            "swap-agent":     self._cmd_swap_agent,
+            "swap-role":      self._cmd_swap_role,
+            "reset-session":  self._cmd_reset_session,
+            "session":        self._cmd_session,
+            "new-session":    self._cmd_new_session,
+            "switch-session": self._cmd_switch_session,
+            "quit":           self._cmd_quit,
         }.get(verb)
         if handler is None:
             self.notify(f"unknown command: {verb}", severity="error")
@@ -717,6 +843,32 @@ class TermApp(App[None]):
     async def _cmd_quit(self, _args: list[str]) -> None:
         self.exit()
 
+    async def _cmd_session(self, _args: list[str]) -> None:
+        """`:session` opens the session picker (same as F9)."""
+        self.action_open_session_picker()
+
+    async def _cmd_new_session(self, args: list[str]) -> None:
+        if not args:
+            self.notify("usage: new-session <name>", severity="error")
+            return
+        await self._create_and_switch_session(" ".join(args))
+
+    async def _cmd_switch_session(self, args: list[str]) -> None:
+        if not args:
+            self.notify("usage: switch-session <id-or-name>", severity="error")
+            return
+        target = args[0]
+        info = self._sessions.get(target)
+        if info is None:
+            for s in self._sessions.list():
+                if s.name == target:
+                    info = s
+                    break
+        if info is None:
+            self.notify(f"unknown session: {target}", severity="error")
+            return
+        await self._switch_session(info.id)
+
     async def _cmd_resume(self, args: list[str]) -> None:
         """Resume conversation for a node (or the focused one).
 
@@ -764,10 +916,16 @@ class TermApp(App[None]):
         self._save_session()
 
     async def _cmd_reset_session(self, _args: list[str]) -> None:
-        """Delete the saved session file. Worktrees + branches are kept."""
-        self._session.clear()
+        """Clear the current session's saved state. Worktrees + branches kept."""
+        if self._session is None:
+            return
+        try:
+            self._session.path.unlink()
+        except FileNotFoundError:
+            pass
         self.notify(
-            "session.json cleared; pipeline.toml will be used on next launch",
+            f"session '{self._session.info.name}' state cleared; "
+            "relaunch to start fresh",
             timeout=5,
         )
 

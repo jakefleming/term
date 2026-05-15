@@ -21,6 +21,7 @@ _HELP = """\
   F5          Toggle focus: pipeline sidebar ↔ pane
   F6          + Add agent (open spawn picker)
   F8          Toggle mouse tracking (off = native text selection)
+  F9          Switch / create / delete sessions
   F12         This help screen
 
 [b]Palette commands[/b]  (open with F1)
@@ -32,17 +33,20 @@ _HELP = """\
   swap-role <role|none>              Change focused node's prompt template
   resume [<node>]                    Resume conversation (uses agent's
                                      resume_args, e.g. claude --continue)
-  reset-session                      Clear .term/session.json
+  session                            Same as F9
+  new-session <name>                 Create + switch to a new session
+  switch-session <id-or-name>        Switch to an existing session
+  reset-session                      Clear the active session's saved state
   edit                               Same as F3
   rerun                              Re-trigger a one-shot node
   quit                               Exit
 
-[b]Persistence[/b]
-  Pipeline shape is auto-saved to .term/session.json on every change.
-  When you re-launch [code]term[/code] in this directory, the same nodes
-  come back as [i]fresh[/i] CLI sessions. Use [code]:resume[/code] on a node
-  whose sidebar shows ↻ to pick up the previous conversation. Worktrees
-  persist on disk regardless.
+[b]Sessions[/b]
+  A workspace can hold many sessions, each an independent pipeline with
+  its own worktrees. Click the session header at the top of the sidebar
+  (or press F9) to switch. Conversations don't auto-resume on session
+  switch — they get fresh CLI sessions; use [code]:resume[/code] on a node
+  whose sidebar shows ↻ to continue an earlier chat.
 
 [b]Concepts[/b]
   A node = agent (CLI to run) + optional role (prompt template) + mode

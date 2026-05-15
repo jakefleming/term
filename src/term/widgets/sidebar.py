@@ -32,9 +32,13 @@ class Sidebar(Vertical):
         padding: 0 1;
     }
     Sidebar > #sidebar-title {
-        color: $text-muted;
+        color: $accent;
         text-style: bold;
         padding: 1 0;
+    }
+    Sidebar > #sidebar-title:hover {
+        color: $text;
+        background: $primary 20%;
     }
     Sidebar > ListView {
         height: 1fr;
@@ -62,14 +66,43 @@ class Sidebar(Vertical):
         """Posted when the user activates the '+ Add agent' row."""
         pass
 
-    def __init__(self, pipeline: PipelineRun, id: str | None = None) -> None:
+    class SessionPickerRequested(Message):
+        """Posted when the user clicks the session header at top of sidebar."""
+        pass
+
+    def __init__(
+        self,
+        pipeline: PipelineRun,
+        session_name: str = "",
+        id: str | None = None,
+    ) -> None:
         super().__init__(id=id)
         self.pipeline = pipeline
+        self._session_name = session_name
         self._refresh_lock: asyncio.Lock | None = None
 
+    def set_session_name(self, name: str) -> None:
+        self._session_name = name
+        try:
+            self.query_one("#sidebar-title", Static).update(
+                f"▸ {name}   ▾"
+            )
+        except Exception:
+            pass
+
     def compose(self) -> ComposeResult:
-        yield Static(f"▸ {self.pipeline.config.pipeline.name}", id="sidebar-title")
+        label = self._session_name or "session"
+        yield Static(f"▸ {label}   ▾", id="sidebar-title")
         yield ListView(id="node-list")
+
+    def on_click(self, event) -> None:
+        # Click on the session header → open the picker.
+        try:
+            title = self.query_one("#sidebar-title", Static)
+        except Exception:
+            return
+        if event.widget is title:
+            self.post_message(self.SessionPickerRequested())
 
     async def on_mount(self) -> None:
         await self.refresh_nodes()

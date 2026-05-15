@@ -70,9 +70,9 @@ async def _drive() -> int:
 
         await _launch_and(tmp, first)
 
-        # session.json should now exist with the node persisted.
-        sess_path = ws.term_dir / "session.json"
-        assert sess_path.exists(), "session.json wasn't written"
+        # session.json should now exist for the default session.
+        sess_path = ws.term_dir / "sessions" / "default" / "session.json"
+        assert sess_path.exists(), f"session.json wasn't written at {sess_path}"
         data = json.loads(sess_path.read_text())
         assert len(data["nodes"]) == 1
         assert data["nodes"][0]["id"] == "recorder"

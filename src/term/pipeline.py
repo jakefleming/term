@@ -22,18 +22,21 @@ class NodeState:
 
 
 class PipelineRun:
-    """Owns the per-node runtime state for one pipeline instance."""
+    """Owns the per-node runtime state for one pipeline instance.
+
+    Pipelines are scoped to a Session — Session decides where each node's
+    worktree lives and what its branch is named. PipelineRun starts empty;
+    callers populate `.nodes` via `restore_pipeline` (from a saved session)
+    or `seed_pipeline_from_config` (from pipeline.toml for a fresh session).
+    """
 
     def __init__(self, config: Config, workspace: Workspace) -> None:
         self.config = config
         self.workspace = workspace
         self.nodes: list[NodeState] = []
 
-    def initialize(self) -> None:
-        """Ensure a worktree exists for every node in the pipeline."""
-        for spec in self.config.pipeline.nodes:
-            wt = self.workspace.ensure_worktree(spec.id)
-            self.nodes.append(NodeState(spec=spec, worktree=wt))
+    def reset(self) -> None:
+        self.nodes = []
 
     def node(self, node_id: str) -> NodeState:
         for n in self.nodes:
