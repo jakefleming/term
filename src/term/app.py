@@ -121,15 +121,44 @@ class TermApp(App[None]):
         self._mouse = mouse
 
     async def on_paste(self, event) -> None:
-        """App-level paste logger (TERM_DEBUG=1). Helps diagnose whether
-        paste events reach the app at all when widget-level handlers don't.
+        """App-level paste handler.
+
+        Drag-and-drop in Ghostty (and likely others) delivers the Paste
+        event to the App directly, not to the focused widget — so the
+        per-pane `PtyPane.on_paste` never fires. We forward the paste
+        content to the current pane's PTY here as a fallback, and stop
+        the event so the widget-level handler doesn't double-write for
+        normal cmd+V (which bubbles up).
         """
         if os.environ.get("TERM_DEBUG") == "1":
             try:
                 with open(os.path.expanduser("~/.term-debug.log"), "a") as f:
-                    f.write(f"{time.time():.3f} APP on_paste text={event.text!r}\n")
+                    focused = (
+                        type(self.focused).__name__ if self.focused else None
+                    )
+                    f.write(
+                        f"{time.time():.3f} APP on_paste focused={focused} "
+                        f"current={self._current_node_id} text={event.text!r}\n"
+                    )
             except Exception:
                 pass
+        text = event.text
+        if not text or self._current_node_id is None:
+            return
+        try:
+            pane = self.query_one(
+                f"#{self._pane_id(self._current_node_id)}", PtyPane
+            )
+        except Exception:
+            return
+        if not pane.is_alive or pane._proc is None:
+            return
+        event.stop()
+        data = b"\x1b[200~" + text.encode("utf-8", errors="replace") + b"\x1b[201~"
+        try:
+            os.write(pane._proc.fd, data)
+        except OSError:
+            pass
 
     def _yolo_extend(self, base: tuple[str, ...] | list[str], recipe) -> list[str]:
         """Append yolo_args when --yolo is on.
