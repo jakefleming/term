@@ -23,6 +23,7 @@ import asyncio
 import os
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -36,6 +37,7 @@ from term.handoff import handoff as do_handoff
 from term.pipeline import NodeState, PipelineRun
 from term.widgets.command_palette import CommandPaletteScreen
 from term.widgets.diff_tray import DiffTray
+from term.widgets.help_screen import HelpScreen
 from term.widgets.one_shot_panel import OneShotPanel
 from term.widgets.pty_pane import PtyPane
 from term.widgets.sidebar import Sidebar
@@ -75,6 +77,9 @@ class TermApp(App[None]):
     DiffTray.hidden { display: none; }
     """
 
+    # Time after which a persistent pane with no recent bytes is "idle."
+    _ACTIVITY_WINDOW = 2.5
+
     BINDINGS = [
         Binding("ctrl+q",  "quit",                  "Quit",     priority=True),
         Binding("f1",      "open_palette",          "Palette",  priority=True),
@@ -82,6 +87,7 @@ class TermApp(App[None]):
         Binding("f3",      "edit_artifact",         "Edit",     priority=True),
         Binding("f4",      "toggle_diff",           "Diff",     priority=True),
         Binding("f5",      "toggle_sidebar_focus",  "Pipeline", priority=True),
+        Binding("f12",     "open_help",             "Help",     priority=True),
     ]
 
     def __init__(self, config: Config, workspace: Workspace) -> None:
@@ -110,6 +116,9 @@ class TermApp(App[None]):
         first = next(iter(self.pipeline.nodes), None)
         if first is not None:
             self._focus_node(first.spec.id)
+
+        # Tick status states for persistent panes based on PTY activity.
+        self.set_interval(1.0, self._tick_status)
 
     async def _mount_panel_for(self, node: NodeState, switcher: ContentSwitcher) -> None:
         pane_id = self._pane_id(node.spec.id)
@@ -168,6 +177,34 @@ class TermApp(App[None]):
 
     def action_toggle_diff(self) -> None:
         self.query_one(DiffTray).toggle_class("hidden")
+
+    def action_open_help(self) -> None:
+        self.push_screen(HelpScreen())
+
+    async def _tick_status(self) -> None:
+        """Update persistent-node statuses based on PTY activity."""
+        now = time.monotonic()
+        changed = False
+        for node in self.pipeline.nodes:
+            if node.spec.mode != "persistent":
+                continue
+            try:
+                pane = self.query_one(f"#{self._pane_id(node.spec.id)}", PtyPane)
+            except Exception:
+                continue
+            if not pane.is_alive and pane.exit_code is not None:
+                new_status = "exited"
+            elif pane.last_byte_at == 0:
+                new_status = "idle"
+            elif now - pane.last_byte_at < self._ACTIVITY_WINDOW:
+                new_status = "running"
+            else:
+                new_status = "idle"
+            if node.status != new_status:
+                node.status = new_status
+                changed = True
+        if changed:
+            await self.query_one(Sidebar).refresh_nodes()
 
     # --- handoff (F2 / palette) --------------------------------------------
 
@@ -306,10 +343,12 @@ class TermApp(App[None]):
 
     # --- command palette (F1) -----------------------------------------------
 
-    async def action_open_palette(self) -> None:
-        cmd = await self.push_screen_wait(CommandPaletteScreen())
-        if cmd:
-            await self._dispatch_command(cmd)
+    def action_open_palette(self) -> None:
+        self.push_screen(CommandPaletteScreen(), self._on_palette_dismissed)
+
+    def _on_palette_dismissed(self, command: str | None) -> None:
+        if command:
+            asyncio.create_task(self._dispatch_command(command))
 
     async def _dispatch_command(self, raw: str) -> None:
         try:

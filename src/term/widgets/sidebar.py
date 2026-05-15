@@ -15,6 +15,7 @@ _STATUS_MARK = {
     "running": "●",
     "ready":   "✓",
     "blocked": "✗",
+    "exited":  "⏹",
 }
 
 

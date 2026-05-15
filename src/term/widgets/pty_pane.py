@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Sequence
 
 import pyte
@@ -119,6 +120,8 @@ class PtyPane(Widget, can_focus=True):
         self._cols = 80
         self._rows = 24
         self._reader_attached = False
+        self._last_byte_at: float = 0.0
+        self._exit_code: int | None = None
 
     async def on_mount(self) -> None:
         size = self.size
@@ -180,8 +183,15 @@ class PtyPane(Widget, can_focus=True):
                 self._reader_attached = False
             except Exception:
                 pass
+            try:
+                # Reap so exitstatus becomes available.
+                self._proc.wait()
+                self._exit_code = self._proc.exitstatus
+            except Exception:
+                self._exit_code = -1
             self.refresh()
             return
+        self._last_byte_at = time.monotonic()
         self._stream.feed(data)
         self.refresh()
 
@@ -245,3 +255,13 @@ class PtyPane(Widget, can_focus=True):
     @property
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.isalive()
+
+    @property
+    def last_byte_at(self) -> float:
+        """Monotonic timestamp of the most recent byte from the child, or 0."""
+        return self._last_byte_at
+
+    @property
+    def exit_code(self) -> int | None:
+        """Exit status once the child has exited; None while still alive."""
+        return self._exit_code
