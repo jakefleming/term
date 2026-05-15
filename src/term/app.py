@@ -3,16 +3,26 @@
 Two apps live here:
 
 - `TermApp` — the real thing. Loads a pipeline, ensures a worktree per node,
-  spawns one persistent PtyPane per node, shows a sidebar to switch focus,
-  and lets you hand off the focused node to the next with F2.
-- `SpikeApp` — the single-pane smoke-test app used to de-risk the PTY widget.
-  Kept around because `term spike -- <cmd>` is useful for poking at the
-  rendering layer in isolation.
+  spawns one persistent PtyPane or one-shot panel per node, shows a sidebar
+  to switch focus, a diff tray on the right, and a `:` command palette.
+- `SpikeApp` — single-pane smoke-test app for poking at the PTY widget in
+  isolation. Reachable via `term spike -- <cmd>`.
+
+Key bindings (app-level priority — PTY panes do not see these):
+  Ctrl-Q   quit
+  F1       command palette
+  F2       handoff focused → next
+  F3       open pending files in $EDITOR
+  F4       toggle diff tray
+  F5       focus sidebar (toggle)
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import shlex
+import subprocess
 from pathlib import Path
 from typing import Sequence
 
@@ -21,12 +31,15 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Footer
 
-from term.config import Config
+from term.config import Config, NodeSpec
 from term.handoff import handoff as do_handoff
-from term.pipeline import PipelineRun
+from term.pipeline import NodeState, PipelineRun
+from term.widgets.command_palette import CommandPaletteScreen
+from term.widgets.diff_tray import DiffTray
+from term.widgets.one_shot_panel import OneShotPanel
 from term.widgets.pty_pane import PtyPane
 from term.widgets.sidebar import Sidebar
-from term.workspace import Workspace
+from term.workspace import Workspace, git
 
 
 class SpikeApp(App[None]):
@@ -52,19 +65,23 @@ class SpikeApp(App[None]):
 
 
 class TermApp(App[None]):
-    """Pipeline + per-node PTY panes + handoff."""
+    """Pipeline + per-node panes + handoff + diff tray + palette."""
 
     CSS = """
     Screen { background: $surface; layout: vertical; }
     #body { height: 1fr; layout: horizontal; }
-    PtyPane { width: 100%; height: 100%; }
+    PtyPane, OneShotPanel { width: 100%; height: 100%; }
     ContentSwitcher#panes { width: 1fr; height: 100%; background: $surface; }
+    DiffTray.hidden { display: none; }
     """
 
     BINDINGS = [
-        Binding("ctrl+q", "quit", "Quit", priority=True),
-        Binding("f2", "handoff", "Handoff →", priority=True),
-        Binding("f5", "toggle_sidebar_focus", "Pipeline", priority=True),
+        Binding("ctrl+q",  "quit",                  "Quit",     priority=True),
+        Binding("f1",      "open_palette",          "Palette",  priority=True),
+        Binding("f2",      "handoff",               "Handoff →", priority=True),
+        Binding("f3",      "edit_artifact",         "Edit",     priority=True),
+        Binding("f4",      "toggle_diff",           "Diff",     priority=True),
+        Binding("f5",      "toggle_sidebar_focus",  "Pipeline", priority=True),
     ]
 
     def __init__(self, config: Config, workspace: Workspace) -> None:
@@ -78,49 +95,66 @@ class TermApp(App[None]):
         with Horizontal(id="body"):
             yield Sidebar(self.pipeline, id="sidebar")
             yield ContentSwitcher(id="panes")
+            yield DiffTray(id="diff-tray")
         yield Footer()
 
     async def on_mount(self) -> None:
-        # Build worktrees (may take a moment first time).
         self.pipeline.initialize()
 
         switcher = self.query_one("#panes", ContentSwitcher)
         for node in self.pipeline.nodes:
-            if node.spec.mode != "persistent":
-                continue  # one-shot nodes don't get a pane
-            recipe = self.config.agent_for_role(node.spec.role)
-            pane = PtyPane(
-                recipe.command,
-                cwd=str(node.worktree.path),
-                id=self._pane_id(node.spec.id),
-            )
-            await switcher.mount(pane)
+            await self._mount_panel_for(node, switcher)
 
         await self.query_one(Sidebar).refresh_nodes()
 
-        first_persistent = next(
-            (n for n in self.pipeline.nodes if n.spec.mode == "persistent"),
-            None,
-        )
-        if first_persistent is not None:
-            self._focus_node(first_persistent.spec.id)
+        first = next(iter(self.pipeline.nodes), None)
+        if first is not None:
+            self._focus_node(first.spec.id)
+
+    async def _mount_panel_for(self, node: NodeState, switcher: ContentSwitcher) -> None:
+        pane_id = self._pane_id(node.spec.id)
+        if node.spec.mode == "persistent":
+            recipe = self.config.agent_for_role(node.spec.role)
+            await switcher.mount(
+                PtyPane(recipe.command, cwd=str(node.worktree.path), id=pane_id)
+            )
+        else:
+            await switcher.mount(
+                OneShotPanel(node.spec.id, node.spec.role, id=pane_id)
+            )
 
     def _pane_id(self, node_id: str) -> str:
-        # ContentSwitcher uses widget id; sanitize node id to be a valid id.
-        return "pane-" + node_id.replace("/", "_")
+        return "pane-" + node_id.replace("/", "_").replace(".", "_")
+
+    # --- focus management ---------------------------------------------------
 
     def _focus_node(self, node_id: str) -> None:
         try:
             node = self.pipeline.node(node_id)
         except KeyError:
             return
-        if node.spec.mode != "persistent":
-            return
         switcher = self.query_one("#panes", ContentSwitcher)
         switcher.current = self._pane_id(node_id)
         self._current_node_id = node_id
-        pane = self.query_one(f"#{self._pane_id(node_id)}", PtyPane)
-        pane.focus()
+        try:
+            self.query_one(f"#{self._pane_id(node_id)}").focus()
+        except Exception:
+            pass
+        self._refresh_diff_tray(node)
+
+    def _refresh_diff_tray(self, node: NodeState | None = None) -> None:
+        if node is None and self._current_node_id is not None:
+            try:
+                node = self.pipeline.node(self._current_node_id)
+            except KeyError:
+                node = None
+        if node is None:
+            return
+        try:
+            tray = self.query_one(DiffTray)
+        except Exception:
+            return
+        tray.show_for(f"{node.spec.id}  ({node.status})", node.worktree.path)
 
     def on_sidebar_node_selected(self, message: Sidebar.NodeSelected) -> None:
         self._focus_node(message.node_id)
@@ -132,6 +166,11 @@ class TermApp(App[None]):
         else:
             sidebar.focus_list()
 
+    def action_toggle_diff(self) -> None:
+        self.query_one(DiffTray).toggle_class("hidden")
+
+    # --- handoff (F2 / palette) --------------------------------------------
+
     async def action_handoff(self) -> None:
         if self._current_node_id is None:
             self.notify("no node focused", severity="warning")
@@ -139,42 +178,45 @@ class TermApp(App[None]):
         source = self.pipeline.node(self._current_node_id)
         target = self.pipeline.next_after(source.spec.id)
         if target is None:
-            self.notify(f"{source.spec.id} is the last node — nothing to hand off to",
-                        severity="warning")
+            self.notify(
+                f"{source.spec.id} is the last node — use :handoff <node> to reroute",
+                severity="warning",
+            )
             return
+        await self._do_handoff(source, target)
 
+    async def _do_handoff(self, source: NodeState, target: NodeState) -> None:
         try:
-            result = do_handoff(self.workspace, source, target)
+            result = await asyncio.to_thread(do_handoff, self.workspace, source, target)
         except Exception as e:
             self.notify(f"handoff failed: {e}", severity="error", timeout=8)
             return
-
         if not result.ok:
             self.notify(result.message, severity="warning", timeout=6)
             return
-
         self.notify(result.message, timeout=4)
 
-        # Inject the target role's prompt template into its pane (if persistent).
         if target.spec.mode == "persistent":
             role = self.config.roles[target.spec.role]
             if role.prompt_template:
-                pane = self.query_one(f"#{self._pane_id(target.spec.id)}", PtyPane)
-                self._inject_prompt(pane, role.prompt_template)
+                try:
+                    pane = self.query_one(f"#{self._pane_id(target.spec.id)}", PtyPane)
+                    self._inject_prompt(pane, role.prompt_template)
+                except Exception:
+                    pass
             self._focus_node(target.spec.id)
+        else:
+            self._focus_node(target.spec.id)
+            asyncio.create_task(self._run_one_shot(target))
 
         await self.query_one(Sidebar).refresh_nodes()
 
     def _inject_prompt(self, pane: PtyPane, prompt: str) -> None:
-        """Write the role's prompt into the target pane's PTY and submit it."""
         if not pane.is_alive:
             return
-        proc = pane._proc  # internal but stable enough for now
+        proc = pane._proc
         if proc is None:
             return
-        # Newlines in the middle of the prompt could submit early in some CLIs.
-        # Single-line collapse keeps the injection robust; the agent still sees
-        # the full instruction.
         line = " ".join(prompt.split())
         try:
             os.write(proc.fd, line.encode("utf-8"))
@@ -182,6 +224,190 @@ class TermApp(App[None]):
         except OSError:
             pass
 
+    # --- one-shot execution -------------------------------------------------
+
+    async def _run_one_shot(self, node: NodeState) -> None:
+        recipe = self.config.agent_for_role(node.spec.role)
+        if not recipe.one_shot:
+            self.notify(
+                f"agent {recipe.name!r} has no one_shot recipe — set "
+                f"`one_shot = [...]` in config",
+                severity="error",
+            )
+            node.status = "blocked"
+            await self.query_one(Sidebar).refresh_nodes()
+            return
+        role = self.config.roles[node.spec.role]
+        prompt = role.prompt_template
+        cmd = [a.replace("{prompt}", prompt) for a in recipe.one_shot]
+
+        panel = self.query_one(f"#{self._pane_id(node.spec.id)}", OneShotPanel)
+        panel.begin_run(cmd)
+        node.status = "running"
+        await self.query_one(Sidebar).refresh_nodes()
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(node.worktree.path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except FileNotFoundError as e:
+            panel.append(f"\n[error: {e}]\n")
+            panel.end_run(127)
+            node.status = "blocked"
+            await self.query_one(Sidebar).refresh_nodes()
+            return
+
+        assert proc.stdout is not None
+        while True:
+            chunk = await proc.stdout.read(4096)
+            if not chunk:
+                break
+            panel.append(chunk.decode(errors="replace"))
+        rc = await proc.wait()
+        panel.end_run(rc)
+        node.status = "ready" if rc == 0 else "blocked"
+        await self.query_one(Sidebar).refresh_nodes()
+        self._refresh_diff_tray(node)
+
+    # --- editor interjection (F3) ------------------------------------------
+
+    def action_edit_artifact(self) -> None:
+        if self._current_node_id is None:
+            self.notify("no node focused", severity="warning")
+            return
+        node = self.pipeline.node(self._current_node_id)
+        files = self._pending_files(node)
+        if not files:
+            self.notify("no pending files to edit", severity="warning")
+            return
+        editor_cmd = os.environ.get("EDITOR") or "vi"
+        cmd = shlex.split(editor_cmd) + files
+        try:
+            with self.suspend():
+                subprocess.run(cmd, cwd=str(node.worktree.path), check=False)
+        except Exception as e:
+            self.notify(f"editor failed: {e}", severity="error", timeout=8)
+            return
+        self._refresh_diff_tray(node)
+
+    def _pending_files(self, node: NodeState) -> list[str]:
+        cp = git(
+            ["ls-files", "--modified", "--others", "--exclude-standard"],
+            cwd=node.worktree.path, check=False,
+        )
+        files = [
+            line for line in cp.stdout.decode(errors="replace").splitlines()
+            if line.strip()
+        ]
+        return files
+
+    # --- command palette (F1) -----------------------------------------------
+
+    async def action_open_palette(self) -> None:
+        cmd = await self.push_screen_wait(CommandPaletteScreen())
+        if cmd:
+            await self._dispatch_command(cmd)
+
+    async def _dispatch_command(self, raw: str) -> None:
+        try:
+            parts = shlex.split(raw)
+        except ValueError as e:
+            self.notify(f"bad command: {e}", severity="error")
+            return
+        if not parts:
+            return
+        verb, args = parts[0], parts[1:]
+        handler = {
+            "spawn":   self._cmd_spawn,
+            "handoff": self._cmd_handoff,
+            "edit":    self._cmd_edit,
+            "rerun":   self._cmd_rerun,
+            "quit":    self._cmd_quit,
+        }.get(verb)
+        if handler is None:
+            self.notify(f"unknown command: {verb}", severity="error")
+            return
+        await handler(args)
+
+    async def _cmd_spawn(self, args: list[str]) -> None:
+        mode = "persistent"
+        positional: list[str] = []
+        for a in args:
+            if a in ("-o", "--one-shot"):
+                mode = "one-shot"
+            else:
+                positional.append(a)
+        if len(positional) != 1:
+            self.notify("usage: spawn [-o] <role>", severity="error")
+            return
+        role = positional[0]
+        if role not in self.config.roles:
+            self.notify(
+                f"unknown role: {role!r} (available: "
+                f"{', '.join(sorted(self.config.roles))})",
+                severity="error",
+            )
+            return
+        # generate a unique node id
+        base = role
+        node_id = base
+        i = 2
+        existing = {n.spec.id for n in self.pipeline.nodes}
+        while node_id in existing:
+            node_id = f"{base}-{i}"
+            i += 1
+        spec = NodeSpec(id=node_id, role=role, mode=mode)
+        worktree = self.workspace.ensure_worktree(node_id)
+        state = NodeState(spec=spec, worktree=worktree)
+        self.pipeline.nodes.append(state)
+
+        switcher = self.query_one("#panes", ContentSwitcher)
+        await self._mount_panel_for(state, switcher)
+        await self.query_one(Sidebar).refresh_nodes()
+        self._focus_node(node_id)
+        self.notify(f"spawned {node_id} ({mode})")
+
+    async def _cmd_handoff(self, args: list[str]) -> None:
+        if self._current_node_id is None:
+            self.notify("no node focused", severity="warning")
+            return
+        source = self.pipeline.node(self._current_node_id)
+        if not args:
+            target = self.pipeline.next_after(source.spec.id)
+            if target is None:
+                self.notify(f"{source.spec.id} has no next node", severity="warning")
+                return
+        else:
+            try:
+                target = self.pipeline.node(args[0])
+            except KeyError:
+                self.notify(f"unknown node: {args[0]!r}", severity="error")
+                return
+            if target.spec.id == source.spec.id:
+                self.notify("can't hand off to self", severity="warning")
+                return
+        await self._do_handoff(source, target)
+
+    async def _cmd_edit(self, _args: list[str]) -> None:
+        self.action_edit_artifact()
+
+    async def _cmd_rerun(self, _args: list[str]) -> None:
+        if self._current_node_id is None:
+            return
+        node = self.pipeline.node(self._current_node_id)
+        if node.spec.mode != "one-shot":
+            self.notify("rerun is only for one-shot nodes", severity="warning")
+            return
+        asyncio.create_task(self._run_one_shot(node))
+
+    async def _cmd_quit(self, _args: list[str]) -> None:
+        self.exit()
+
+
+# --- entrypoints -----------------------------------------------------------
 
 def run_term(workspace_root: Path | None = None) -> None:
     from term.config import load_config

@@ -59,14 +59,12 @@ def handoff(
                 raise
 
     src_head = workspace.head(src)
-    if source.last_handoff_commit == src_head:
-        return HandoffResult(
-            ok=False,
-            source_id=source.spec.id,
-            target_id=target.spec.id,
-            commit=src_head,
-            message="nothing new to hand off",
-        )
+
+    # We deliberately do *not* short-circuit on "source HEAD unchanged since
+    # last handoff" — that would break the reroute case where the same source
+    # state is handed to a *different* target. The tar-extract step below
+    # naturally detects no-op deliveries (no diff vs target's current state)
+    # and returns an "ok, no changes" result instead.
 
     # 2. Auto-commit target so its work is preserved before we overlay source.
     if workspace.is_dirty(tgt):

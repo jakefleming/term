@@ -71,9 +71,11 @@ def main() -> int:
         print(f"  review → build: {r2.message}")
         print(f"     builder worktree has: {sorted(f.name for f in build.worktree.path.iterdir() if not f.name.startswith('.'))}")
 
-        # Re-handoff with no new work should be a no-op.
+        # Re-handoff with no new work: target's tree already matches source,
+        # so tar-extract leaves the worktree clean — succeeds with a "no
+        # changes vs target" message rather than committing an empty handoff.
         r3 = handoff(ws, review, build)
-        assert not r3.ok and "nothing new" in r3.message, r3
+        assert r3.ok and "no changes" in r3.message, r3
         print(f"  no-op handoff: {r3.message}")
 
         print("OK")
