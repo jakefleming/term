@@ -14,12 +14,16 @@ command = ["claude"]
 one_shot = ["claude", "-p", "{prompt}"]
 # Appended only when term is launched with --yolo / --dangerously-skip-permissions.
 yolo_args = ["--dangerously-skip-permissions"]
+# Used when you explicitly :resume a node (the session was previously seen).
+resume_args = ["--continue"]
 
 [agents.codex]
 command = ["codex"]
 one_shot = ["codex", "exec", "{prompt}"]
 # Codex's permission-bypass flag if/when you want it; off by default.
 # yolo_args = ["--ask-for-approval", "never"]
+# Codex resume flag if your version supports it; user adjustable.
+# resume_args = ["--continue"]
 
 [agents.shell]
 command = ["bash"]

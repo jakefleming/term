@@ -36,6 +36,7 @@ from textual.widgets import ContentSwitcher, Footer, Static
 from term.config import Config, NodeSpec
 from term.handoff import handoff as do_handoff
 from term.pipeline import NodeState, PipelineRun
+from term.session import Session, restore_pipeline
 from term.widgets.command_palette import CommandPaletteScreen
 from term.widgets.diff_tray import DiffTray
 from term.widgets.help_screen import HelpScreen
@@ -117,6 +118,7 @@ class TermApp(App[None]):
         # Default mouse on; F8 toggles it off mid-session for native text
         # selection. Drag-drop works in either mode (handled at App level).
         self._mouse = True if mouse is None else mouse
+        self._session = Session(workspace)
 
     async def on_paste(self, event) -> None:
         """App-level paste handler.
@@ -185,11 +187,30 @@ class TermApp(App[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.pipeline.initialize()
+        # Restore prior session if one exists; else initialize from pipeline.toml.
+        saved = self._session.load()
+        if saved is not None:
+            restored, skipped = restore_pipeline(
+                self.pipeline, saved,
+                config_role_names=set(self.config.roles),
+                config_agent_names=set(self.config.agents),
+            )
+            if restored:
+                self.notify(
+                    f"resumed {restored} agent{'s' if restored != 1 else ''} from prior session"
+                    + (f" ({skipped} skipped)" if skipped else ""),
+                    timeout=4,
+                )
+            else:
+                # All saved entries were invalid → fall back to declared pipeline.
+                self.pipeline.initialize()
+        else:
+            self.pipeline.initialize()
 
         switcher = self.query_one("#panes", ContentSwitcher)
         for node in self.pipeline.nodes:
             await self._mount_panel_for(node, switcher)
+            node.seen = True
 
         await self.query_one(Sidebar).refresh_nodes()
 
@@ -216,6 +237,9 @@ class TermApp(App[None]):
                 severity="warning",
                 timeout=8,
             )
+
+        # Persist the (possibly restored, possibly newly-seeded) state.
+        self._save_session()
 
     async def _mount_panel_for(self, node: NodeState, switcher: ContentSwitcher) -> None:
         pane_id = self._pane_id(node.spec.id)
@@ -320,10 +344,12 @@ class TermApp(App[None]):
         self.pipeline.nodes.append(state)
         switcher = self.query_one("#panes", ContentSwitcher)
         await self._mount_panel_for(state, switcher)
+        state.seen = True
         await self.query_one(Sidebar).refresh_nodes()
         self._focus_node(node_id)
         suffix = f" · {role}" if role else ""
         self.notify(f"spawned {node_id} ({agent}{suffix}, {mode})")
+        self._save_session()
         return node_id
 
     def action_toggle_sidebar_focus(self) -> None:
@@ -347,6 +373,13 @@ class TermApp(App[None]):
             f"mouse {'on' if self._mouse else 'off — select text natively'}",
             timeout=3,
         )
+
+    def _save_session(self) -> None:
+        """Persist current pipeline shape to .term/session.json."""
+        try:
+            self._session.save(self.pipeline, self._current_node_id)
+        except Exception:
+            pass
 
     def _write_mouse_seq(self, *, enable: bool) -> None:
         # Standard SGR mouse modes Textual uses; toggling them all is
@@ -414,6 +447,7 @@ class TermApp(App[None]):
             self.notify(result.message, severity="warning", timeout=6)
             return
         self.notify(result.message, timeout=4)
+        self._save_session()
 
         if target.spec.mode == "persistent":
             prompt = self.config.prompt_for_node(target.spec)
@@ -541,13 +575,15 @@ class TermApp(App[None]):
             return
         verb, args = parts[0], parts[1:]
         handler = {
-            "spawn":      self._cmd_spawn,
-            "handoff":    self._cmd_handoff,
-            "edit":       self._cmd_edit,
-            "rerun":      self._cmd_rerun,
-            "swap-agent": self._cmd_swap_agent,
-            "swap-role":  self._cmd_swap_role,
-            "quit":       self._cmd_quit,
+            "spawn":         self._cmd_spawn,
+            "handoff":       self._cmd_handoff,
+            "edit":          self._cmd_edit,
+            "rerun":         self._cmd_rerun,
+            "resume":        self._cmd_resume,
+            "swap-agent":    self._cmd_swap_agent,
+            "swap-role":     self._cmd_swap_role,
+            "reset-session": self._cmd_reset_session,
+            "quit":          self._cmd_quit,
         }.get(verb)
         if handler is None:
             self.notify(f"unknown command: {verb}", severity="error")
@@ -612,10 +648,12 @@ class TermApp(App[None]):
         except Exception:
             pass
         await self._mount_panel_for(node, switcher)
+        node.seen = True
         node.status = "idle"
         await self.query_one(Sidebar).refresh_nodes()
         self._focus_node(node.spec.id)
         self.notify(f"swapped {node.spec.id} → agent {new_agent}")
+        self._save_session()
 
     async def _cmd_swap_role(self, args: list[str]) -> None:
         if len(args) != 1:
@@ -641,6 +679,7 @@ class TermApp(App[None]):
         self.notify(
             f"swapped {node.spec.id} → role {new_role or 'blank'}"
         )
+        self._save_session()
 
     async def _cmd_handoff(self, args: list[str]) -> None:
         if self._current_node_id is None:
@@ -677,6 +716,60 @@ class TermApp(App[None]):
 
     async def _cmd_quit(self, _args: list[str]) -> None:
         self.exit()
+
+    async def _cmd_resume(self, args: list[str]) -> None:
+        """Resume conversation for a node (or the focused one).
+
+        Tears down the current pane and respawns the agent with its
+        configured resume_args (e.g. `claude --continue`). Only meaningful
+        for persistent nodes whose agent declares resume_args.
+        """
+        node_id = args[0] if args else self._current_node_id
+        if node_id is None:
+            self.notify("no node focused", severity="warning")
+            return
+        try:
+            node = self.pipeline.node(node_id)
+        except KeyError:
+            self.notify(f"unknown node: {node_id!r}", severity="error")
+            return
+        if node.spec.mode != "persistent":
+            self.notify("resume is only for persistent nodes", severity="warning")
+            return
+        recipe = self.config.agent_for_node(node.spec)
+        if not recipe.resume_args:
+            self.notify(
+                f"agent {recipe.name!r} has no resume_args — set "
+                f"`resume_args = [...]` in config",
+                severity="warning",
+            )
+            return
+        switcher = self.query_one("#panes", ContentSwitcher)
+        pane_id = self._pane_id(node.spec.id)
+        try:
+            old = self.query_one(f"#{pane_id}")
+            await old.remove()
+        except Exception:
+            pass
+        # Spawn with command + resume_args (plus yolo if active).
+        cmd = list(recipe.command) + list(recipe.resume_args)
+        if self._yolo and recipe.yolo_args:
+            cmd.extend(recipe.yolo_args)
+        await switcher.mount(
+            PtyPane(cmd, cwd=str(node.worktree.path), id=pane_id)
+        )
+        node.status = "idle"
+        self._focus_node(node.spec.id)
+        self.notify(f"resumed {node.spec.id}")
+        self._save_session()
+
+    async def _cmd_reset_session(self, _args: list[str]) -> None:
+        """Delete the saved session file. Worktrees + branches are kept."""
+        self._session.clear()
+        self.notify(
+            "session.json cleared; pipeline.toml will be used on next launch",
+            timeout=5,
+        )
 
 
 # --- entrypoints -----------------------------------------------------------

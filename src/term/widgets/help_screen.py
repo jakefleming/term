@@ -30,9 +30,19 @@ _HELP = """\
   handoff <node>                     Reroute: focused → <node>
   swap-agent <agent>                 Replace focused node's CLI
   swap-role <role|none>              Change focused node's prompt template
+  resume [<node>]                    Resume conversation (uses agent's
+                                     resume_args, e.g. claude --continue)
+  reset-session                      Clear .term/session.json
   edit                               Same as F3
   rerun                              Re-trigger a one-shot node
   quit                               Exit
+
+[b]Persistence[/b]
+  Pipeline shape is auto-saved to .term/session.json on every change.
+  When you re-launch [code]term[/code] in this directory, the same nodes
+  come back as [i]fresh[/i] CLI sessions. Use [code]:resume[/code] on a node
+  whose sidebar shows ↻ to pick up the previous conversation. Worktrees
+  persist on disk regardless.
 
 [b]Concepts[/b]
   A node = agent (CLI to run) + optional role (prompt template) + mode

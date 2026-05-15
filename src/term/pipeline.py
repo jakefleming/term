@@ -14,7 +14,11 @@ class NodeState:
     spec: NodeSpec
     worktree: Worktree
     last_handoff_commit: str | None = None
-    status: str = "idle"  # idle | running | ready | blocked
+    status: str = "idle"  # idle | running | ready | blocked | exited
+    # `seen` flips to True after the node has been spawned at least once.
+    # Used by :resume: a "seen" node has CLI history we can pick up; a
+    # never-seen node has nothing to resume.
+    seen: bool = False
 
 
 class PipelineRun:

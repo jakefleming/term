@@ -83,12 +83,26 @@ class Sidebar(Vertical):
         async with self._refresh_lock:
             lv = self.query_one("#node-list", ListView)
             await lv.clear()
+            config = self.pipeline.config
             for node in self.pipeline.nodes:
                 mark = _STATUS_MARK.get(node.status, "?")
                 mode_glyph = "▶" if node.spec.mode == "persistent" else "⚡"
                 agent = node.spec.agent
                 role = node.spec.role or "—"
-                label = f"{mark} {mode_glyph} {node.spec.id}\n    {agent}  ·  {role}"
+                # Show ↻ if this node has saved conversation history we
+                # could resume (seen before AND the agent supports it).
+                recipe = config.agents.get(agent)
+                resumable = (
+                    node.seen
+                    and recipe is not None
+                    and bool(recipe.resume_args)
+                    and node.spec.mode == "persistent"
+                )
+                resume_tag = "  ↻" if resumable else ""
+                label = (
+                    f"{mark} {mode_glyph} {node.spec.id}{resume_tag}\n"
+                    f"    {agent}  ·  {role}"
+                )
                 await lv.append(ListItem(Label(label)))
             add_item = ListItem(Label("+ Add agent"))
             add_item.add_class("add-row")
