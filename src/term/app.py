@@ -120,6 +120,17 @@ class TermApp(App[None]):
             mouse = os.environ.get("TERM_PROGRAM") != "Apple_Terminal"
         self._mouse = mouse
 
+    async def on_paste(self, event) -> None:
+        """App-level paste logger (TERM_DEBUG=1). Helps diagnose whether
+        paste events reach the app at all when widget-level handlers don't.
+        """
+        if os.environ.get("TERM_DEBUG") == "1":
+            try:
+                with open(os.path.expanduser("~/.term-debug.log"), "a") as f:
+                    f.write(f"{time.time():.3f} APP on_paste text={event.text!r}\n")
+            except Exception:
+                pass
+
     def _yolo_extend(self, base: tuple[str, ...] | list[str], recipe) -> list[str]:
         """Append yolo_args when --yolo is on.
 

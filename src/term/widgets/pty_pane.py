@@ -23,6 +23,22 @@ from textual.strip import Strip
 from textual.widget import Widget
 
 
+# Opt-in event tracing: set TERM_DEBUG=1 to log every key / paste / mouse
+# event reaching PtyPane to ~/.term-debug.log. Used to diagnose drag-and-drop.
+_DEBUG = os.environ.get("TERM_DEBUG") == "1"
+_DEBUG_LOG = os.path.expanduser("~/.term-debug.log")
+
+
+def _dlog(msg: str) -> None:
+    if not _DEBUG:
+        return
+    try:
+        with open(_DEBUG_LOG, "a") as f:
+            f.write(f"{time.time():.3f} {msg}\n")
+    except Exception:
+        pass
+
+
 _NAMED_COLORS = {
     "black", "red", "green", "blue", "magenta", "cyan", "white",
 }
@@ -240,10 +256,12 @@ class PtyPane(Widget, can_focus=True):
         return Strip(segments, self._cols)
 
     async def on_key(self, event: events.Key) -> None:
+        _dlog(f"on_key key={event.key!r} char={event.character!r}")
         if self._proc is None or not self._proc.isalive():
             return
         data = _key_to_bytes(event)
         if data is None:
+            _dlog(f"  -> no byte mapping for key={event.key!r}")
             return
         event.stop()
         event.prevent_default()
@@ -259,6 +277,7 @@ class PtyPane(Widget, can_focus=True):
         which is why dragging an image into the wrapped Claude Code pane
         does nothing.
         """
+        _dlog(f"on_paste text={event.text!r}")
         if self._proc is None or not self._proc.isalive():
             return
         text = event.text
@@ -271,6 +290,12 @@ class PtyPane(Widget, can_focus=True):
             os.write(self._proc.fd, data)
         except OSError:
             pass
+
+    async def on_mouse_down(self, event: events.MouseDown) -> None:
+        _dlog(f"on_mouse_down x={event.x} y={event.y} button={event.button}")
+
+    async def on_mouse_up(self, event: events.MouseUp) -> None:
+        _dlog(f"on_mouse_up x={event.x} y={event.y} button={event.button}")
 
     @property
     def is_alive(self) -> bool:
