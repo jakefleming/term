@@ -36,6 +36,9 @@ _HELP = """\
   tell <node> <message>              Inject a message into another pane
                                      as [From <you>]: <message>. Use to
                                      relay between agents.
+  brief [<node>|all]                 Prime an agent (or all) on the team
+                                     comms convention so they'll actually
+                                     message peers when you ask.
   session                            Same as F9
   new-session <name>                 Create + switch to a new session
   switch-session <id-or-name>        Switch to an existing session

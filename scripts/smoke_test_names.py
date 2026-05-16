@@ -56,7 +56,18 @@ async def _drive() -> int:
             text = agents_md.read_text()
             assert "Alice" in text and "alice" in text, text
             assert "No other agents" in text, "should note empty team"
-            print(f"  AGENTS.md written, mentions Alice and empty team")
+            assert "term:team-roster:start" in text, "marker missing"
+            assert "term:team-roster:end" in text, "end marker missing"
+            print(f"  AGENTS.md written with markers, mentions Alice and empty team")
+
+            # Verify: pre-existing AGENTS.md content is preserved on refresh.
+            existing_content = (
+                "# Project AGENTS.md\n\n"
+                "This is the user's existing operational guide.\n"
+                "Do not destroy.\n"
+            )
+            agents_md.write_text(existing_content)
+            # Trigger a refresh by spawning another node.
 
             # Spawn Bob; both worktrees should now list each other.
             bob_id = await app._spawn_node(
@@ -68,12 +79,16 @@ async def _drive() -> int:
 
             alice_md = (alice.worktree.path / "AGENTS.md").read_text()
             bob_md = (app.pipeline.node("bob").worktree.path / "AGENTS.md").read_text()
+            # Critical: existing user content survived the refresh.
+            assert "user's existing operational guide" in alice_md, \
+                f"user's content was clobbered:\n{alice_md}"
+            assert "Do not destroy" in alice_md
             assert "Bob" in alice_md and "bob" in alice_md, alice_md
             assert "Alice" in bob_md and "alice" in bob_md, bob_md
-            # Each should describe ITSELF in the "You are" line, not the other.
+            # Each should describe ITSELF in the "You are" line.
             assert "You are **Alice**" in alice_md
             assert "You are **Bob**" in bob_md
-            print(f"  AGENTS.md updated for both Alice + Bob, each knows the other")
+            print(f"  AGENTS.md merged correctly: user content preserved + team updated")
 
             # `:tell Alice ...` should resolve by display name.
             app._focus_node("bob")

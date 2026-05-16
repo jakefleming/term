@@ -859,6 +859,7 @@ class TermApp(App[None]):
             "rerun":          self._cmd_rerun,
             "resume":         self._cmd_resume,
             "tell":           self._cmd_tell,
+            "brief":          self._cmd_brief,
             "swap-agent":     self._cmd_swap_agent,
             "swap-role":      self._cmd_swap_role,
             "reset-session":  self._cmd_reset_session,
@@ -998,6 +999,55 @@ class TermApp(App[None]):
 
     async def _cmd_quit(self, _args: list[str]) -> None:
         self.exit()
+
+    async def _cmd_brief(self, args: list[str]) -> None:
+        """`:brief [<node>|all]` — prime an agent to use peer-to-peer comms.
+
+        Ambient AGENTS.md alone often doesn't get an agent to proactively
+        message peers. This injects a direct, in-conversation instruction
+        listing the peers and the mailbox convention so the agent knows
+        it can act on it. Run once per agent at the start of a session.
+        """
+        if args and args[0] == "all":
+            targets = [n for n in self.pipeline.nodes if n.spec.mode == "persistent"]
+        elif args:
+            node = self._resolve_node(args[0])
+            if node is None:
+                self.notify(f"unknown node: {args[0]}", severity="error")
+                return
+            targets = [node]
+        elif self._current_node_id is not None:
+            targets = [self.pipeline.node(self._current_node_id)]
+        else:
+            self.notify("usage: brief [<node>|all]", severity="error")
+            return
+        sent = 0
+        for target in targets:
+            others = [n for n in self.pipeline.nodes if n.spec.id != target.spec.id]
+            if not others or target.spec.mode != "persistent":
+                continue
+            msg = self._render_brief(target, others)
+            ok = self._inject_message_to_node(
+                target_node_id=target.spec.id, content=msg, sender="you",
+            )
+            if ok:
+                sent += 1
+        self.notify(f"briefed {sent} agent{'s' if sent != 1 else ''}", timeout=3)
+
+    def _render_brief(self, me: NodeState, others: list[NodeState]) -> str:
+        names = ", ".join(
+            f"{n.spec.display} (id: {n.spec.id})" for n in others
+        )
+        return (
+            f"You have peer agents in this term session you can coordinate "
+            f"with directly: {names}. To send a message to one, write a text "
+            f"file at ../../mail/{me.spec.id}__to__<their-id>.txt with the "
+            f"body of your message. Term picks it up within 1.5 seconds and "
+            f"delivers it as a paste to their terminal prefixed "
+            f"[From {me.spec.id}]:. Their replies arrive at your prompt the "
+            f"same way. Coordinate with them whenever you need information "
+            f"or want to delegate — you do not need to ask me first."
+        )
 
     async def _cmd_tell(self, args: list[str]) -> None:
         """`:tell <node> <message>` — relay a message into another pane.
