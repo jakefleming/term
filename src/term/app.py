@@ -245,6 +245,11 @@ class TermApp(App[None]):
         self.set_interval(1.0, self._tick_status)
         # Tick the mood / avatar so it decays and re-renders.
         self.set_interval(2.0, self._tick_mood)
+        # Tick the mailbox to deliver inter-agent messages.
+        self.set_interval(1.5, self._tick_mail)
+        # Ensure mailbox dir exists for the current session.
+        if self._session is not None:
+            self._session.ensure()
 
         if not self._mouse:
             self._write_mouse_seq(enable=False)
@@ -497,6 +502,7 @@ class TermApp(App[None]):
         await self._teardown_current_session()
         self._sessions.set_current(info.id)
         self._session = self._sessions.open_session(info)
+        self._session.ensure()
         # Fresh mood per session.
         self._mood = MoodTracker()
         self._last_mood = "neutral"
@@ -567,6 +573,56 @@ class TermApp(App[None]):
 
     def _tick_mood(self) -> None:
         self._refresh_mood_display()
+
+    def _tick_mail(self) -> None:
+        """Pick up inter-agent messages dropped into the session's mail dir."""
+        if self._session is None:
+            return
+        for target, content, sender in self._session.drain_mail():
+            if not content:
+                continue
+            self._inject_message_to_node(
+                target_node_id=target,
+                content=content,
+                sender=sender or "unknown",
+            )
+
+    def _inject_message_to_node(
+        self, *, target_node_id: str, content: str, sender: str,
+    ) -> bool:
+        """Bracketed-paste a message into the named pane's PTY."""
+        try:
+            node = self.pipeline.node(target_node_id)
+        except KeyError:
+            self.notify(
+                f"can't deliver to {target_node_id!r}: no such node in session",
+                severity="warning",
+            )
+            return False
+        if node.spec.mode != "persistent":
+            self.notify(
+                f"can't deliver to {target_node_id!r}: not a persistent agent",
+                severity="warning",
+            )
+            return False
+        try:
+            pane = self.query_one(f"#{self._pane_id(target_node_id)}", PtyPane)
+        except Exception:
+            return False
+        if not pane.is_alive or pane._proc is None:
+            return False
+        wrapped = f"[From {sender}]: {content}"
+        data = (
+            b"\x1b[200~"
+            + wrapped.encode("utf-8", errors="replace")
+            + b"\x1b[201~"
+        )
+        try:
+            os.write(pane._proc.fd, data)
+        except OSError:
+            return False
+        self.notify(f"delivered to {target_node_id} (from {sender})", timeout=3)
+        return True
 
     def _refresh_mood_display(self) -> None:
         mood = self._mood.current_mood()
@@ -769,6 +825,7 @@ class TermApp(App[None]):
             "edit":           self._cmd_edit,
             "rerun":          self._cmd_rerun,
             "resume":         self._cmd_resume,
+            "tell":           self._cmd_tell,
             "swap-agent":     self._cmd_swap_agent,
             "swap-role":      self._cmd_swap_role,
             "reset-session":  self._cmd_reset_session,
@@ -908,6 +965,25 @@ class TermApp(App[None]):
 
     async def _cmd_quit(self, _args: list[str]) -> None:
         self.exit()
+
+    async def _cmd_tell(self, args: list[str]) -> None:
+        """`:tell <node> <message>` — relay a message into another pane.
+
+        Sender defaults to 'you' (the human at the console). If the focused
+        node is persistent, its id is used as the sender so the target can
+        tell who's talking.
+        """
+        if len(args) < 2:
+            self.notify("usage: tell <node> <message>", severity="error")
+            return
+        target = args[0]
+        message = " ".join(args[1:])
+        sender = "you"
+        if self._current_node_id is not None and self._current_node_id != target:
+            sender = self._current_node_id
+        self._inject_message_to_node(
+            target_node_id=target, content=message, sender=sender,
+        )
 
     async def _cmd_session(self, _args: list[str]) -> None:
         """`:session` opens the session picker (same as F9)."""

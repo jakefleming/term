@@ -33,6 +33,9 @@ _HELP = """\
   swap-role <role|none>              Change focused node's prompt template
   resume [<node>]                    Resume conversation (uses agent's
                                      resume_args, e.g. claude --continue)
+  tell <node> <message>              Inject a message into another pane
+                                     as [From <you>]: <message>. Use to
+                                     relay between agents.
   session                            Same as F9
   new-session <name>                 Create + switch to a new session
   switch-session <id-or-name>        Switch to an existing session
@@ -47,6 +50,16 @@ _HELP = """\
   (or press F9) to switch. Conversations don't auto-resume on session
   switch — they get fresh CLI sessions; use [code]:resume[/code] on a node
   whose sidebar shows ↻ to continue an earlier chat.
+
+[b]Agent ↔ agent messaging[/b]
+  [code]:tell <node> <message>[/code] injects a message into another
+  agent's pane as [code][From <sender>]: <message>[/code]. Manual relay.
+
+  Agents can also message each other autonomously by writing a file at
+  [code].term/sessions/<id>/mail/to-<target-node-id>.txt[/code] (relative
+  to the worktree: [code]../../mail/to-<target>.txt[/code]). Term watches
+  that directory, delivers the content, and deletes the file. You'd
+  typically prime an agent for this by telling it the convention up front.
 
 [b]Concepts[/b]
   A node = agent (CLI to run) + optional role (prompt template) + mode

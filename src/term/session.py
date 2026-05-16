@@ -75,10 +75,53 @@ class Session:
         self._dir = workspace.term_dir / "sessions" / info.id
         self.worktree_root = workspace.root / info.worktree_root
         self.path = self._dir / "session.json"
+        # Mailbox: agents drop `to-<node-id>.txt` files here to send a
+        # message to a peer in this session. Term watches the directory
+        # and delivers them as bracketed-paste into the target pane.
+        self.mail_dir = self._dir / "mail"
 
     def ensure(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         self.worktree_root.mkdir(parents=True, exist_ok=True)
+        self.mail_dir.mkdir(parents=True, exist_ok=True)
+
+    def drain_mail(self) -> list[tuple[str, str, str | None]]:
+        """Read and consume any pending mail.
+
+        Filename conventions accepted:
+            to-<target>.txt
+            to-<target>.<timestamp>.txt
+            <sender>__to__<target>.txt
+
+        Returns a list of (target_id, content, sender_id_or_None) in mtime
+        order. Files are deleted after read.
+        """
+        if not self.mail_dir.exists():
+            return []
+        results: list[tuple[str, str, str | None, float]] = []
+        for p in self.mail_dir.iterdir():
+            if not p.is_file():
+                continue
+            stem = p.stem
+            target: str | None = None
+            sender: str | None = None
+            if "__to__" in stem:
+                left, right = stem.split("__to__", 1)
+                sender = left or None
+                target = right.split(".", 1)[0] or None
+            elif stem.startswith("to-"):
+                target = stem[3:].split(".", 1)[0] or None
+            if not target:
+                continue
+            try:
+                content = p.read_text(errors="replace").strip()
+                mtime = p.stat().st_mtime
+                p.unlink()
+            except OSError:
+                continue
+            results.append((target, content, sender, mtime))
+        results.sort(key=lambda t: t[3])
+        return [(t, c, s) for (t, c, s, _) in results]
 
     def branch_for(self, node_id: str) -> str:
         return f"{self.info.branch_prefix}/{node_id}"
