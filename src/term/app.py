@@ -1215,6 +1215,7 @@ class TermApp(App[None]):
             "session":        self._cmd_session,
             "new-session":    self._cmd_new_session,
             "switch-session": self._cmd_switch_session,
+            "close":          self._cmd_close,
             "images":         self._cmd_images,
             "open-image":     self._cmd_open_image,
             "quit":           self._cmd_quit,
@@ -1503,6 +1504,58 @@ class TermApp(App[None]):
             f"{'resumed' if resume else 'restarted fresh'} {node.spec.id}"
         )
         self._save_session()
+
+    async def _cmd_close(self, args: list[str]) -> None:
+        """`:close [<node>]` — remove an agent from the session.
+
+        Tears down the agent's pane, drops the node from the pipeline,
+        cancels any in-flight sub-tasks it spawned, refreshes the team
+        roster in everyone else's AGENTS.md, and saves the session.
+
+        The agent's git worktree + branch are kept on disk so you don't
+        lose its work; clean them up with `git worktree remove` later
+        if you want.
+        """
+        node_id = args[0] if args else self._current_node_id
+        if node_id is None:
+            self.notify("usage: close <node>", severity="warning")
+            return
+        node = self._resolve_node(node_id)
+        if node is None:
+            self.notify(f"unknown node: {node_id!r}", severity="error")
+            return
+        # Cancel any subtasks this agent owns.
+        for sub in self._subtasks:
+            if sub.sender_id == node.spec.id and sub.task is not None and not sub.task.done():
+                sub.task.cancel()
+        self._subtasks = [
+            s for s in self._subtasks if s.sender_id != node.spec.id
+        ]
+        # Unmount the pane.
+        pane_id = self._pane_id(node.spec.id)
+        try:
+            pane = self.query_one(f"#{pane_id}")
+            await pane.remove()
+        except Exception:
+            pass
+        # Drop from pipeline.
+        self.pipeline.nodes = [
+            n for n in self.pipeline.nodes if n.spec.id != node.spec.id
+        ]
+        # Pick a new focus if we just closed the focused one.
+        if self._current_node_id == node.spec.id:
+            switcher = self.query_one("#panes", ContentSwitcher)
+            nxt = next(iter(self.pipeline.nodes), None)
+            if nxt is not None:
+                self._focus_node(nxt.spec.id)
+            else:
+                self._current_node_id = None
+                switcher.current = "empty-state"
+        # Refresh sidebar + team roster everywhere.
+        await self.query_one(Sidebar).refresh_nodes()
+        self._refresh_team_docs()
+        self._save_session()
+        self.notify(f"closed {node.spec.display}", timeout=4)
 
     async def _cmd_reset_session(self, _args: list[str]) -> None:
         """Clear the current session's saved state. Worktrees + branches kept."""

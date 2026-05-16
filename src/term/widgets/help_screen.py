@@ -31,6 +31,8 @@ _HELP = """\
   handoff <node>                     Reroute: focused → <node>
   swap-agent <agent>                 Replace focused node's CLI
   swap-role <role|none>              Change focused node's prompt template
+  close [<node>]                     Remove an agent from the session
+                                     (keeps the worktree + branch on disk)
   resume [<node>]                    Resume conversation now (uses agent's
                                      resume_args, e.g. claude --continue).
                                      Term also auto-resumes on launch.
