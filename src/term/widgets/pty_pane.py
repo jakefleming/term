@@ -348,6 +348,32 @@ class PtyPane(Widget, can_focus=True):
     async def on_mouse_up(self, event: events.MouseUp) -> None:
         _dlog(f"on_mouse_up x={event.x} y={event.y} button={event.button}")
 
+    async def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        await self._forward_wheel(event, button=64)
+
+    async def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        await self._forward_wheel(event, button=65)
+
+    async def _forward_wheel(self, event, *, button: int) -> None:
+        """Forward a wheel event to the child as an SGR mouse escape.
+
+        Claude Code / Codex / any TUI that opted into mouse-tracking
+        translate these into scrollback navigation. Without this hook
+        Textual swallows the wheel event and the child's scrollback is
+        unreachable.
+        """
+        if self._proc is None or not self._proc.isalive():
+            return
+        event.stop()
+        event.prevent_default()
+        col = max(1, int(event.x) + 1)
+        row = max(1, int(event.y) + 1)
+        seq = f"\x1b[<{button};{col};{row};M".encode()
+        try:
+            os.write(self._proc.fd, seq)
+        except OSError:
+            pass
+
     @property
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.isalive()
