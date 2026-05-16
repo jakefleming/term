@@ -133,8 +133,10 @@ class Sidebar(Vertical):
                     and node.spec.mode == "persistent"
                 )
                 resume_tag = "  ↻" if resumable else ""
+                display = node.spec.display
+                id_suffix = f"" if display == node.spec.id else f"  ({node.spec.id})"
                 label = (
-                    f"{mark} {mode_glyph} {node.spec.id}{resume_tag}\n"
+                    f"{mark} {mode_glyph} {display}{id_suffix}{resume_tag}\n"
                     f"    {agent}  ·  {role}"
                 )
                 await lv.append(ListItem(Label(label)))

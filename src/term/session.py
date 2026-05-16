@@ -55,11 +55,19 @@ class SavedNode:
     mode: str
     seen: bool = False
     last_status: str = "idle"
+    display_name: str | None = None
 
 
 def _slugify(name: str) -> str:
+    """Internal: slugify session names. See `slugify` for node names."""
     s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return s or "session"
+
+
+def slugify(name: str) -> str:
+    """Turn a free-form name into a filesystem/branch-safe slug."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "node"
 
 
 def _now() -> str:
@@ -146,6 +154,7 @@ class Session:
                     mode=n.get("mode", "persistent"),
                     seen=bool(n.get("seen", False)),
                     last_status=n.get("last_status", "idle"),
+                    display_name=n.get("display_name"),
                 ))
             except KeyError:
                 continue
@@ -164,6 +173,7 @@ class Session:
                     "mode": n.spec.mode,
                     "seen": n.seen,
                     "last_status": n.status,
+                    "display_name": n.spec.display_name,
                 }
                 for n in pipeline.nodes
             ],
@@ -359,7 +369,10 @@ def restore_pipeline(
         if sn.role is not None and sn.role not in config_role_names:
             skipped += 1
             continue
-        spec = NodeSpec(id=sn.id, agent=sn.agent, role=sn.role, mode=sn.mode)
+        spec = NodeSpec(
+            id=sn.id, agent=sn.agent, role=sn.role, mode=sn.mode,
+            display_name=sn.display_name,
+        )
         wt = pipeline.workspace.ensure_worktree_at(
             session.path_for(sn.id),
             session.branch_for(sn.id),

@@ -52,14 +52,21 @@ _HELP = """\
   whose sidebar shows ↻ to continue an earlier chat.
 
 [b]Agent ↔ agent messaging[/b]
-  [code]:tell <node> <message>[/code] injects a message into another
+  Each spawn picker offers an optional [i]Name[/i] (e.g. "Alice"). The
+  sidebar shows the name; messaging uses it.
+
+  [code]:tell <name-or-id> <message>[/code] injects a message into another
   agent's pane as [code][From <sender>]: <message>[/code]. Manual relay.
 
-  Agents can also message each other autonomously by writing a file at
-  [code].term/sessions/<id>/mail/to-<target-node-id>.txt[/code] (relative
-  to the worktree: [code]../../mail/to-<target>.txt[/code]). Term watches
-  that directory, delivers the content, and deletes the file. You'd
-  typically prime an agent for this by telling it the convention up front.
+  On every roster change term refreshes [code]AGENTS.md[/code] in each
+  worktree, listing the team and the mailbox convention:
+
+      ../../mail/<your-id>__to__<their-id>.txt
+
+  Both claude-code and codex auto-read AGENTS.md in cwd, so agents
+  discover their peers and the messaging contract without you having to
+  brief them. Tell them once "talk to Alice when you need X" and they
+  can do so autonomously. Replies arrive at your prompt as pastes.
 
 [b]Concepts[/b]
   A node = agent (CLI to run) + optional role (prompt template) + mode

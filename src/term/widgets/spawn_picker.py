@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import RadioButton, RadioSet, Static
+from textual.widgets import Input, RadioButton, RadioSet, Static
 
 
 _BLANK_ROLE_ID = "__blank__"
@@ -62,6 +62,9 @@ class SpawnPickerScreen(ModalScreen[dict | None]):
         with Vertical():
             yield Static("Add agent", classes="title")
 
+            yield Static("Name (optional — peers see this)", classes="section")
+            yield Input(placeholder="e.g. alice", id="name-input")
+
             yield Static("Agent (CLI to run)", classes="section")
             with RadioSet(id="agent-set"):
                 for i, name in enumerate(self._agents):
@@ -78,11 +81,15 @@ class SpawnPickerScreen(ModalScreen[dict | None]):
                 yield RadioButton("persistent", value=True)
                 yield RadioButton("one-shot")
 
-            yield Static("↑/↓ navigate · Tab next section · Enter spawn · Esc cancel",
+            yield Static("Tab/Shift-Tab between fields · Enter spawn · Esc cancel",
                          id="hint")
 
     def on_mount(self) -> None:
-        self.query_one("#agent-set", RadioSet).focus()
+        self.query_one("#name-input", Input).focus()
+
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        # Pressing Enter in the name field submits the form.
+        self.action_submit()
 
     def action_submit(self) -> None:
         agent = self._pick("agent-set", self._agents)
@@ -95,7 +102,10 @@ class SpawnPickerScreen(ModalScreen[dict | None]):
             role = None
         else:
             role = self._roles[role_idx - 1]
-        self.dismiss({"agent": agent, "role": role, "mode": mode})
+        name = self.query_one("#name-input", Input).value.strip() or None
+        self.dismiss({
+            "agent": agent, "role": role, "mode": mode, "name": name,
+        })
 
     def action_cancel(self) -> None:
         self.dismiss(None)

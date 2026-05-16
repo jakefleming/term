@@ -41,6 +41,11 @@ class NodeSpec:
     agent: str
     role: str | None = None
     mode: str = "persistent"  # "persistent" | "one-shot"
+    display_name: str | None = None
+
+    @property
+    def display(self) -> str:
+        return self.display_name or self.id
 
 
 @dataclass(frozen=True)

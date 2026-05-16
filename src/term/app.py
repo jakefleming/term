@@ -43,7 +43,9 @@ from term.session import (
     SessionManager,
     restore_pipeline,
     seed_pipeline_from_config,
+    slugify as _slugify,
 )
+from term.team_doc import write_team_docs
 from term.widgets.session_picker import SessionPickerScreen, _SessionRow
 from term.widgets.command_palette import CommandPaletteScreen
 from term.widgets.confirm_screen import ConfirmScreen
@@ -233,6 +235,7 @@ class TermApp(App[None]):
             node.seen = True
 
         await self.query_one(Sidebar).refresh_nodes()
+        self._refresh_team_docs()
 
         first = next(iter(self.pipeline.nodes), None)
         if first is not None:
@@ -342,6 +345,7 @@ class TermApp(App[None]):
                 agent=result["agent"],
                 role=result.get("role"),
                 mode=result.get("mode", "persistent"),
+                display_name=result.get("name"),
             )
         )
 
@@ -351,6 +355,7 @@ class TermApp(App[None]):
         agent: str,
         role: str | None,
         mode: str,
+        display_name: str | None = None,
     ) -> str | None:
         if agent not in self.config.agents:
             self.notify(f"unknown agent: {agent!r}", severity="error")
@@ -358,14 +363,22 @@ class TermApp(App[None]):
         if role is not None and role not in self.config.roles:
             self.notify(f"unknown role: {role!r}", severity="error")
             return None
-        base = role or agent
+        # Pick an id. If a display name was provided, slugify it; otherwise
+        # fall back to role/agent.
+        if display_name:
+            base = _slugify(display_name)
+        else:
+            base = role or agent
         node_id = base
         i = 2
         existing = {n.spec.id for n in self.pipeline.nodes}
         while node_id in existing:
             node_id = f"{base}-{i}"
             i += 1
-        spec = NodeSpec(id=node_id, agent=agent, role=role, mode=mode)
+        spec = NodeSpec(
+            id=node_id, agent=agent, role=role, mode=mode,
+            display_name=display_name,
+        )
         assert self._session is not None
         worktree = self.workspace.ensure_worktree_at(
             self._session.path_for(node_id),
@@ -380,9 +393,13 @@ class TermApp(App[None]):
         await self.query_one(Sidebar).refresh_nodes()
         self._focus_node(node_id)
         suffix = f" · {role}" if role else ""
-        self.notify(f"spawned {node_id} ({agent}{suffix}, {mode})")
+        self.notify(f"spawned {spec.display} ({agent}{suffix}, {mode})")
         self._save_session()
+        self._refresh_team_docs()
         return node_id
+
+    def _refresh_team_docs(self) -> None:
+        write_team_docs(self.pipeline.nodes)
 
     def action_toggle_sidebar_focus(self) -> None:
         sidebar = self.query_one(Sidebar)
@@ -526,6 +543,7 @@ class TermApp(App[None]):
             await self._mount_panel_for(node, switcher)
             node.seen = True
         await self.query_one(Sidebar).refresh_nodes()
+        self._refresh_team_docs()
         first = next(iter(self.pipeline.nodes), None)
         if first is not None:
             self._focus_node(first.spec.id)
@@ -587,26 +605,41 @@ class TermApp(App[None]):
                 sender=sender or "unknown",
             )
 
+    def _resolve_node(self, ref: str) -> NodeState | None:
+        """Find a node by id, display name, or slugified display name."""
+        try:
+            return self.pipeline.node(ref)
+        except KeyError:
+            pass
+        ref_lower = ref.lower()
+        ref_slug = _slugify(ref)
+        for n in self.pipeline.nodes:
+            if (n.spec.display_name or "").lower() == ref_lower:
+                return n
+            if n.spec.id == ref_slug:
+                return n
+        return None
+
     def _inject_message_to_node(
         self, *, target_node_id: str, content: str, sender: str,
     ) -> bool:
         """Bracketed-paste a message into the named pane's PTY."""
-        try:
-            node = self.pipeline.node(target_node_id)
-        except KeyError:
+        node = self._resolve_node(target_node_id)
+        if node is None:
             self.notify(
                 f"can't deliver to {target_node_id!r}: no such node in session",
                 severity="warning",
             )
             return False
+        target_node_id = node.spec.id
         if node.spec.mode != "persistent":
             self.notify(
-                f"can't deliver to {target_node_id!r}: not a persistent agent",
+                f"can't deliver to {node.spec.display}: not a persistent agent",
                 severity="warning",
             )
             return False
         try:
-            pane = self.query_one(f"#{self._pane_id(target_node_id)}", PtyPane)
+            pane = self.query_one(f"#{self._pane_id(node.spec.id)}", PtyPane)
         except Exception:
             return False
         if not pane.is_alive or pane._proc is None:
