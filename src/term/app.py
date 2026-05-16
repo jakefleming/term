@@ -387,6 +387,11 @@ class TermApp(App[None]):
         )
         state = NodeState(spec=spec, worktree=worktree)
         self.pipeline.nodes.append(state)
+        # Refresh AGENTS.md in ALL worktrees BEFORE the new pane mounts,
+        # so the new agent's startup read of AGENTS.md picks up the full
+        # team roster. (Existing peers won't re-read; they're briefed in
+        # the conversation below.)
+        self._refresh_team_docs()
         switcher = self.query_one("#panes", ContentSwitcher)
         await self._mount_panel_for(state, switcher)
         state.seen = True
@@ -395,8 +400,39 @@ class TermApp(App[None]):
         suffix = f" · {role}" if role else ""
         self.notify(f"spawned {spec.display} ({agent}{suffix}, {mode})")
         self._save_session()
-        self._refresh_team_docs()
+        # Auto-introduce the new node + tell existing peers. Best-effort;
+        # short delay so PTYs are ready to receive.
+        if state.spec.mode == "persistent":
+            asyncio.create_task(self._auto_introduce(state))
         return node_id
+
+    async def _auto_introduce(self, new_node: NodeState) -> None:
+        """After a new node spawns, brief it about peers and announce it to them."""
+        # Give the new pane a moment to finish its CLI startup.
+        await asyncio.sleep(1.5)
+        peers = [
+            n for n in self.pipeline.nodes
+            if n.spec.id != new_node.spec.id and n.spec.mode == "persistent"
+        ]
+        if not peers:
+            return
+        # Brief the new node on the team + mailbox convention.
+        self._inject_message_to_node(
+            target_node_id=new_node.spec.id,
+            content=self._render_brief(new_node, peers),
+            sender="you",
+        )
+        # Announce the new arrival to each existing peer (one short line each).
+        for peer in peers:
+            notice = (
+                f"New teammate just joined the session: "
+                f"{new_node.spec.display} (id: {new_node.spec.id}). "
+                f"You can message them via "
+                f"../../mail/{peer.spec.id}__to__{new_node.spec.id}.txt."
+            )
+            self._inject_message_to_node(
+                target_node_id=peer.spec.id, content=notice, sender="you",
+            )
 
     def _refresh_team_docs(self) -> None:
         write_team_docs(self.pipeline.nodes)
