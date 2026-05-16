@@ -106,6 +106,13 @@ class Sidebar(Vertical):
         except Exception:
             pass
 
+    def set_focused_agent(self, display_name: str | None) -> None:
+        """Forward the focused agent's display name to the avatar card."""
+        try:
+            self.query_one(SessionCard).set_focused_agent(display_name)
+        except Exception:
+            pass
+
     def set_session_mood(self, mood: str) -> None:
         try:
             self.query_one(SessionCard).set_mood(mood)

@@ -261,7 +261,9 @@ class TermApp(App[None]):
             self._focus_node(first.spec.id)
         else:
             # No nodes: park focus on the sidebar so user can keyboard-nav.
-            self.query_one(Sidebar).focus_list()
+            sidebar_widget = self.query_one(Sidebar)
+            sidebar_widget.focus_list()
+            sidebar_widget.set_focused_agent(None)
 
         # Tick status states for persistent panes based on PTY activity.
         self.set_interval(1.0, self._tick_status)
@@ -343,6 +345,11 @@ class TermApp(App[None]):
         self._current_node_id = node_id
         try:
             self.query_one(f"#{self._pane_id(node_id)}").focus()
+        except Exception:
+            pass
+        # Avatar follows the focused agent.
+        try:
+            self.query_one(Sidebar).set_focused_agent(node.spec.display)
         except Exception:
             pass
         self._refresh_diff_tray(node)
@@ -646,6 +653,7 @@ class TermApp(App[None]):
         else:
             self._current_node_id = None
             switcher.current = "empty-state"
+            sidebar.set_focused_agent(None)
         self.notify(f"switched to session '{info.name}'")
         self._save_session()
 
@@ -683,6 +691,10 @@ class TermApp(App[None]):
                 pass
         self.pipeline.reset()
         self._current_node_id = None
+        try:
+            self.query_one(Sidebar).set_focused_agent(None)
+        except Exception:
+            pass
 
     def on_pty_pane_user_line_submitted(
         self, message: PtyPane.UserLineSubmitted
@@ -1551,6 +1563,7 @@ class TermApp(App[None]):
             else:
                 self._current_node_id = None
                 switcher.current = "empty-state"
+                self.query_one(Sidebar).set_focused_agent(None)
         # Refresh sidebar + team roster everywhere.
         await self.query_one(Sidebar).refresh_nodes()
         self._refresh_team_docs()
