@@ -46,6 +46,9 @@ _HELP = """\
   new-session <name>                 Create + switch to a new session
   switch-session <id-or-name>        Switch to an existing session
   reset-session                      Clear the active session's saved state
+  images                             Show captured-image count + latest path
+  open-image [<name>]                Open most-recent (or named) captured
+                                     image in your system viewer
   edit                               Same as F3
   rerun                              Re-trigger a one-shot node
   quit                               Exit
@@ -100,6 +103,14 @@ _HELP = """\
   branch term/node/<node-id>. Handoff snapshots source's tracked files
   into target via [code]git archive HEAD | tar[/code], commits in target,
   injects the target role's prompt template (if any).
+
+[b]Inline images from codex / others[/b]
+  Pyte (the terminal emulator term uses) plus Textual's cell renderer
+  can't passthrough OSC 1337 inline-image bytes the way Ghostty / iTerm
+  would natively, so term intercepts them, saves the payload to
+  [code].term/sessions/<id>/images/[/code], and shows a breadcrumb in
+  the pane. Use [code]:open-image[/code] (or [code]:images[/code] to
+  list) to open the most recent one in your system viewer.
 
 [b]--yolo / --dangerously-skip-permissions[/b]
   Pass either flag when launching term to opt-in for the session. Each

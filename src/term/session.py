@@ -92,12 +92,17 @@ class Session:
         # Term picks them up, runs the sub, delivers stdout back via the
         # mailbox.
         self.spawn_dir = self._dir / "spawn"
+        # Image capture: PtyPane filters intercept OSC 1337 inline-image
+        # sequences and save the payload here, since pyte+Textual can't
+        # render inline images.
+        self.image_dir = self._dir / "images"
 
     def ensure(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         self.worktree_root.mkdir(parents=True, exist_ok=True)
         self.mail_dir.mkdir(parents=True, exist_ok=True)
         self.spawn_dir.mkdir(parents=True, exist_ok=True)
+        self.image_dir.mkdir(parents=True, exist_ok=True)
 
     def drain_mail(self) -> list[tuple[str, str, str | None]]:
         """Read and consume any pending mail.

@@ -4,6 +4,11 @@ The widget owns a `ptyprocess.PtyProcess` and a `pyte.Screen`. Bytes from the
 child are fed into pyte; the resulting virtual screen is rendered line-by-line
 into Textual `Strip`s. Keystrokes on the focused widget are translated back
 into terminal byte sequences and written to the PTY master fd.
+
+If an `image_dir` is provided, the byte stream is pre-filtered to catch
+OSC 1337 inline images (which pyte would silently drop), save them to
+disk, and substitute a breadcrumb the user can see in the rendered
+output.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from pathlib import Path
 from typing import Sequence
 
 import pyte
@@ -22,6 +28,8 @@ from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
 from textual.widget import Widget
+
+from term.pty_filter import StreamFilter
 
 
 # Opt-in event tracing: set TERM_DEBUG=1 to log every key / paste / mouse
@@ -130,12 +138,20 @@ class PtyPane(Widget, can_focus=True):
             super().__init__()
             self.text = text
 
+    class ImageCaptured(Message):
+        """Posted when the filter saves an OSC 1337 inline image."""
+
+        def __init__(self, path: Path) -> None:
+            super().__init__()
+            self.path = path
+
     def __init__(
         self,
         command: Sequence[str],
         *,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        image_dir: Path | None = None,
         name: str | None = None,
         id: str | None = None,
     ) -> None:
@@ -152,6 +168,10 @@ class PtyPane(Widget, can_focus=True):
         self._last_byte_at: float = 0.0
         self._exit_code: int | None = None
         self._user_line_buffer: str = ""
+        self._filter: StreamFilter | None = (
+            StreamFilter(image_dir=image_dir) if image_dir is not None else None
+        )
+        self._filter_image_count = 0
 
     async def on_mount(self) -> None:
         size = self.size
@@ -222,6 +242,12 @@ class PtyPane(Widget, can_focus=True):
             self.refresh()
             return
         self._last_byte_at = time.monotonic()
+        if self._filter is not None:
+            data = self._filter.feed(data)
+            new_images = self._filter.images[self._filter_image_count:]
+            self._filter_image_count = len(self._filter.images)
+            for img in new_images:
+                self.post_message(self.ImageCaptured(img))
         self._stream.feed(data)
         self.refresh()
 

@@ -307,8 +307,14 @@ class TermApp(App[None]):
             if resumed:
                 base = tuple(recipe.command) + tuple(recipe.resume_args)
             command = self._yolo_extend(base, recipe)
+            image_dir = self._session.image_dir if self._session else None
             await switcher.mount(
-                PtyPane(command, cwd=str(node.worktree.path), id=pane_id)
+                PtyPane(
+                    command,
+                    cwd=str(node.worktree.path),
+                    image_dir=image_dir,
+                    id=pane_id,
+                )
             )
             # Stamp so the watchdog can detect an immediate exit (e.g.
             # `claude --continue` when nothing to continue) and fall
@@ -684,6 +690,19 @@ class TermApp(App[None]):
         """A user submitted a line into a pane → feed mood tracker."""
         self._mood.observe_user_text(message.text)
         self._refresh_mood_display()
+
+    def on_pty_pane_image_captured(
+        self, message: PtyPane.ImageCaptured,
+    ) -> None:
+        """An OSC 1337 inline image was extracted from a pane's output.
+
+        Pyte+Textual can't render inline images, so we saved it to disk.
+        Surface the path so the user can open it externally.
+        """
+        self.notify(
+            f"image captured → {message.path}",
+            timeout=8,
+        )
 
     def _tick_mood(self) -> None:
         self._refresh_mood_display()
@@ -1196,6 +1215,8 @@ class TermApp(App[None]):
             "session":        self._cmd_session,
             "new-session":    self._cmd_new_session,
             "switch-session": self._cmd_switch_session,
+            "images":         self._cmd_images,
+            "open-image":     self._cmd_open_image,
             "quit":           self._cmd_quit,
         }.get(verb)
         if handler is None:
@@ -1496,6 +1517,69 @@ class TermApp(App[None]):
             "relaunch to start fresh",
             timeout=5,
         )
+
+    async def _cmd_images(self, _args: list[str]) -> None:
+        """Show captured-image count + path to the session's image dir."""
+        if self._session is None:
+            return
+        img_dir = self._session.image_dir
+        if not img_dir.exists():
+            self.notify("no images captured yet", timeout=4)
+            return
+        files = sorted(
+            (p for p in img_dir.iterdir() if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not files:
+            self.notify("no images captured yet", timeout=4)
+            return
+        latest = files[0]
+        self.notify(
+            f"{len(files)} image(s) in {img_dir}; latest: {latest.name}",
+            timeout=8,
+        )
+
+    async def _cmd_open_image(self, args: list[str]) -> None:
+        """Open the most recent captured image (or a specific one by name)
+        in the system default viewer.
+        """
+        if self._session is None:
+            return
+        img_dir = self._session.image_dir
+        target: Path | None = None
+        if args:
+            cand = img_dir / args[0]
+            if not cand.exists():
+                self.notify(f"no such image: {args[0]}", severity="warning")
+                return
+            target = cand
+        else:
+            if img_dir.exists():
+                files = sorted(
+                    (p for p in img_dir.iterdir() if p.is_file()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                target = files[0] if files else None
+        if target is None:
+            self.notify("no images captured yet", timeout=4)
+            return
+        # Use the platform-appropriate opener. macOS: open; Linux:
+        # xdg-open; otherwise fall through and just print the path.
+        opener = None
+        if sys.platform == "darwin":
+            opener = "open"
+        elif sys.platform.startswith("linux"):
+            opener = "xdg-open"
+        if opener is None:
+            self.notify(f"open externally: {target}", timeout=8)
+            return
+        try:
+            subprocess.Popen([opener, str(target)], start_new_session=True)
+            self.notify(f"opened {target.name}", timeout=4)
+        except (OSError, FileNotFoundError) as e:
+            self.notify(f"opener failed ({e}); path: {target}", severity="warning")
 
 
 # --- entrypoints -----------------------------------------------------------
