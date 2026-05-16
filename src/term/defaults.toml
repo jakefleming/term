@@ -26,8 +26,15 @@ haiku   = ["--model", "claude-haiku-4-5"]
 [agents.codex]
 command = ["codex"]
 one_shot = ["codex", "exec", "{prompt}"]
-# Codex's permission-bypass flag if/when you want it; off by default.
-# yolo_args = ["--ask-for-approval", "never"]
+# Appended when term is launched with --yolo. Bypasses codex's
+# approval prompts AND its workspace sandbox so it can write to the
+# mailbox (../../mail/...) and spawn dir (../../spawn/...) without
+# pausing for confirmation. If your codex version uses different
+# flags, override [agents.codex] in ~/.config/term/config.toml.
+# Alternatives by version:
+#   newer:  ["--dangerously-bypass-approvals-and-sandbox"]
+#   older:  ["--ask-for-approval", "never", "--sandbox", "danger-full-access"]
+yolo_args = ["--dangerously-bypass-approvals-and-sandbox"]
 # Codex resume flag if your version supports it; user adjustable.
 # resume_args = ["--continue"]
 [agents.codex.models]
