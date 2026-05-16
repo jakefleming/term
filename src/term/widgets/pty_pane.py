@@ -18,6 +18,7 @@ from ptyprocess import PtyProcess
 from rich.segment import Segment
 from rich.style import Style
 from textual import events
+from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
 from textual.widget import Widget
@@ -117,6 +118,18 @@ class PtyPane(Widget, can_focus=True):
 
     cursor_visible = reactive(True)
 
+    class UserLineSubmitted(Message):
+        """Posted when the user presses Enter — carries the buffered line.
+
+        Approximate: the buffer accumulates printable keystrokes between
+        Enters and accounts for backspace. Arrow-key edits aren't tracked,
+        and pasted content is captured via on_paste separately. Good
+        enough for soft mood signals.
+        """
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            self.text = text
+
     def __init__(
         self,
         command: Sequence[str],
@@ -138,6 +151,7 @@ class PtyPane(Widget, can_focus=True):
         self._reader_attached = False
         self._last_byte_at: float = 0.0
         self._exit_code: int | None = None
+        self._user_line_buffer: str = ""
 
     async def on_mount(self) -> None:
         size = self.size
@@ -263,6 +277,17 @@ class PtyPane(Widget, can_focus=True):
         if data is None:
             _dlog(f"  -> no byte mapping for key={event.key!r}")
             return
+        # Track natural-language input for mood signals.
+        if event.key == "enter":
+            line = self._user_line_buffer
+            self._user_line_buffer = ""
+            if line.strip():
+                self.post_message(self.UserLineSubmitted(line))
+        elif event.key == "backspace":
+            self._user_line_buffer = self._user_line_buffer[:-1]
+        elif event.character and event.character.isprintable():
+            if len(self._user_line_buffer) < 4096:
+                self._user_line_buffer += event.character
         event.stop()
         event.prevent_default()
         try:

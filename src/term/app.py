@@ -36,6 +36,7 @@ from textual.widgets import ContentSwitcher, Footer, Static
 from term.config import Config, NodeSpec
 from term.handoff import handoff as do_handoff
 from term.pipeline import NodeState, PipelineRun
+from term.mood import MoodTracker
 from term.session import (
     Session,
     SessionInfo,
@@ -129,6 +130,8 @@ class TermApp(App[None]):
         self._mouse = True if mouse is None else mouse
         self._sessions = SessionManager(workspace)
         self._session: Session | None = None  # set in on_mount
+        self._mood = MoodTracker()
+        self._last_mood: str = "neutral"
 
     async def on_paste(self, event) -> None:
         """App-level paste handler.
@@ -240,6 +243,8 @@ class TermApp(App[None]):
 
         # Tick status states for persistent panes based on PTY activity.
         self.set_interval(1.0, self._tick_status)
+        # Tick the mood / avatar so it decays and re-renders.
+        self.set_interval(2.0, self._tick_mood)
 
         if not self._mouse:
             self._write_mouse_seq(enable=False)
@@ -492,7 +497,12 @@ class TermApp(App[None]):
         await self._teardown_current_session()
         self._sessions.set_current(info.id)
         self._session = self._sessions.open_session(info)
-        self.query_one(Sidebar).set_session_name(info.name)
+        # Fresh mood per session.
+        self._mood = MoodTracker()
+        self._last_mood = "neutral"
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_session_name(info.name)
+        sidebar.set_session_mood("neutral")
 
         saved = self._session.load()
         if saved:
@@ -548,6 +558,26 @@ class TermApp(App[None]):
         self.pipeline.reset()
         self._current_node_id = None
 
+    def on_pty_pane_user_line_submitted(
+        self, message: PtyPane.UserLineSubmitted
+    ) -> None:
+        """A user submitted a line into a pane → feed mood tracker."""
+        self._mood.observe_user_text(message.text)
+        self._refresh_mood_display()
+
+    def _tick_mood(self) -> None:
+        self._refresh_mood_display()
+
+    def _refresh_mood_display(self) -> None:
+        mood = self._mood.current_mood()
+        if mood == self._last_mood:
+            return
+        self._last_mood = mood
+        try:
+            self.query_one(Sidebar).set_session_mood(mood)
+        except Exception:
+            pass
+
     async def _tick_status(self) -> None:
         """Update persistent-node statuses based on PTY activity."""
         now = time.monotonic()
@@ -568,10 +598,15 @@ class TermApp(App[None]):
             else:
                 new_status = "idle"
             if node.status != new_status:
+                if new_status == "exited" and (
+                    pane.exit_code is not None and pane.exit_code != 0
+                ):
+                    self._mood.observe_pane_exit(pane.exit_code)
                 node.status = new_status
                 changed = True
         if changed:
             await self.query_one(Sidebar).refresh_nodes()
+        self._refresh_mood_display()
 
     # --- handoff (F2 / palette) --------------------------------------------
 
@@ -599,6 +634,8 @@ class TermApp(App[None]):
             self.notify(result.message, severity="warning", timeout=6)
             return
         self.notify(result.message, timeout=4)
+        self._mood.observe_handoff_success()
+        self._refresh_mood_display()
         self._save_session()
 
         if target.spec.mode == "persistent":

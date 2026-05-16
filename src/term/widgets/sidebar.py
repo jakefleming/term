@@ -10,6 +10,7 @@ from textual.message import Message
 from textual.widgets import Label, ListItem, ListView, Static
 
 from term.pipeline import PipelineRun
+from term.widgets.session_card import SessionCard
 
 
 _STATUS_MARK = {
@@ -84,25 +85,25 @@ class Sidebar(Vertical):
     def set_session_name(self, name: str) -> None:
         self._session_name = name
         try:
-            self.query_one("#sidebar-title", Static).update(
-                f"▸ {name}   ▾"
-            )
+            self.query_one(SessionCard).set_name(name)
+        except Exception:
+            pass
+
+    def set_session_mood(self, mood: str) -> None:
+        try:
+            self.query_one(SessionCard).set_mood(mood)
         except Exception:
             pass
 
     def compose(self) -> ComposeResult:
-        label = self._session_name or "session"
-        yield Static(f"▸ {label}   ▾", id="sidebar-title")
+        yield SessionCard(self._session_name, id="session-card")
         yield ListView(id="node-list")
 
-    def on_click(self, event) -> None:
-        # Click on the session header → open the picker.
-        try:
-            title = self.query_one("#sidebar-title", Static)
-        except Exception:
-            return
-        if event.widget is title:
-            self.post_message(self.SessionPickerRequested())
+    def on_session_card_picker_requested(
+        self, _msg: SessionCard.PickerRequested
+    ) -> None:
+        # Bubble the card's click as our own picker-requested event.
+        self.post_message(self.SessionPickerRequested())
 
     async def on_mount(self) -> None:
         await self.refresh_nodes()
