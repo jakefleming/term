@@ -229,13 +229,19 @@ class TermApp(App[None]):
         else:
             seed_pipeline_from_config(self.pipeline, self._session)
 
+        # Refresh AGENTS.md BEFORE spawning panes so agents read an
+        # up-to-date team roster at startup.
+        self._refresh_team_docs()
+
         switcher = self.query_one("#panes", ContentSwitcher)
         for node in self.pipeline.nodes:
-            await self._mount_panel_for(node, switcher)
+            # Auto-resume previously-seen persistent nodes (e.g.
+            # `claude --continue`) so the conversation picks up where
+            # the user left off. Brand-new seeded nodes have seen=False.
+            await self._mount_panel_for(node, switcher, resume=node.seen)
             node.seen = True
 
         await self.query_one(Sidebar).refresh_nodes()
-        self._refresh_team_docs()
 
         first = next(iter(self.pipeline.nodes), None)
         if first is not None:
@@ -271,11 +277,20 @@ class TermApp(App[None]):
         # Persist the (possibly restored, possibly newly-seeded) state.
         self._save_session()
 
-    async def _mount_panel_for(self, node: NodeState, switcher: ContentSwitcher) -> None:
+    async def _mount_panel_for(
+        self,
+        node: NodeState,
+        switcher: ContentSwitcher,
+        *,
+        resume: bool = False,
+    ) -> None:
         pane_id = self._pane_id(node.spec.id)
         if node.spec.mode == "persistent":
             recipe = self.config.agent_for_node(node.spec)
-            command = self._yolo_extend(recipe.command, recipe)
+            base = recipe.command
+            if resume and recipe.resume_args:
+                base = tuple(recipe.command) + tuple(recipe.resume_args)
+            command = self._yolo_extend(base, recipe)
             await switcher.mount(
                 PtyPane(command, cwd=str(node.worktree.path), id=pane_id)
             )
@@ -574,12 +589,15 @@ class TermApp(App[None]):
             # New empty session.
             pass
 
+        # Refresh AGENTS.md BEFORE spawning panes so agents read an
+        # up-to-date team roster at startup.
+        self._refresh_team_docs()
+
         switcher = self.query_one("#panes", ContentSwitcher)
         for node in self.pipeline.nodes:
-            await self._mount_panel_for(node, switcher)
+            await self._mount_panel_for(node, switcher, resume=node.seen)
             node.seen = True
         await self.query_one(Sidebar).refresh_nodes()
-        self._refresh_team_docs()
         first = next(iter(self.pipeline.nodes), None)
         if first is not None:
             self._focus_node(first.spec.id)

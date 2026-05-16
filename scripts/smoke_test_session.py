@@ -4,7 +4,8 @@ Headless validates:
   - First launch with no session.json initializes from pipeline.toml (empty).
   - Spawning a node persists it to session.json.
   - Second launch in the same workspace restores the node from session.json
-    (with seen=True so the ↻ marker would show).
+    (with seen=True so the ↻ marker would show) and auto-resumes the
+    conversation by spawning with the agent's resume_args.
   - :reset-session clears the file.
   - :resume on a node respawns the pane with the agent's resume_args.
 """
@@ -79,24 +80,33 @@ async def _drive() -> int:
         assert data["nodes"][0]["seen"] is True
         print("  session.json persisted with seen=True")
 
-        # 2nd launch: pipeline restored from session.json.
+        # 2nd launch: pipeline restored from session.json. Previously-seen
+        # nodes should auto-resume by spawning with resume_args.
         async def second(app, pilot):
             assert len(app.pipeline.nodes) == 1
             node = app.pipeline.node("recorder")
             assert node.seen is True, "restored node should still be seen"
-            # The restored launch should have spawned base command again
-            # (resume is opt-in via :resume). LAST_CMD.txt should still be
-            # the base command from first launch — no --resumed.
-            print(f"  2nd: pipeline restored, node.seen={node.seen}")
+            args_file = node.worktree.path / "LAST_CMD.txt"
+            for _ in range(30):
+                if args_file.exists():
+                    text = args_file.read_text().strip()
+                    if "--resumed" in text:
+                        break
+                await asyncio.sleep(0.1)
+            text = args_file.read_text().strip()
+            assert "--resumed" in text, (
+                f"restored launch should auto-resume with resume_args, got {text!r}"
+            )
+            print(f"  2nd: auto-resumed with resume_args: {text!r}")
 
-            # Trigger :resume — pane is torn down, re-mounted with --resumed.
-            (node.worktree.path / "LAST_CMD.txt").unlink(missing_ok=True)
+            # Explicit :resume still works — tears down and respawns with --resumed.
+            args_file.unlink(missing_ok=True)
             await app._dispatch_command("resume")
             for _ in range(30):
-                if (node.worktree.path / "LAST_CMD.txt").exists(): break
+                if args_file.exists(): break
                 await asyncio.sleep(0.1)
-            text = (node.worktree.path / "LAST_CMD.txt").read_text().strip()
-            assert "--resumed" in text, f"resume didn't use resume_args, got {text!r}"
+            text = args_file.read_text().strip()
+            assert "--resumed" in text, f":resume didn't use resume_args, got {text!r}"
             print(f"  2nd: :resume used resume_args: {text!r}")
 
         await _launch_and(tmp, second)
