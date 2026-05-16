@@ -43,13 +43,19 @@ class SubTask:
     started_at: float       # monotonic
     status: str = "queued"  # queued | running | done | failed | cancelled
     rc: int | None = None
-    output: str = ""        # captured stdout (+ merged stderr)
+    output: str = ""        # captured stdout (+ merged stderr); grows
+                            # while the sub is running so the inspector
+                            # can stream it live.
     error: str | None = None
     task: asyncio.Task | None = field(default=None, repr=False)
 
     @property
     def elapsed(self) -> float:
         return time.monotonic() - self.started_at
+
+    @property
+    def is_live(self) -> bool:
+        return self.status in {"queued", "running"}
 
 
 def build_subtask_command(
@@ -114,24 +120,29 @@ async def run_subtask(sub: SubTask, cmd: list[str]) -> None:
         sub.rc = 127
         return
 
-    chunks: list[bytes] = []
     total = 0
+    truncated = False
     assert proc.stdout is not None
     try:
         async def _drain() -> None:
-            nonlocal total
+            nonlocal total, truncated
             while True:
                 chunk = await proc.stdout.read(4096)
                 if not chunk:
                     return
                 total += len(chunk)
-                # Keep the head; drop overflow so a runaway sub can't
-                # blow up memory.
+                # Stream into sub.output as bytes arrive so the
+                # inspector UI can watch live. Cap the buffer; once we
+                # hit the cap, keep counting (so we can report it) but
+                # stop appending.
                 if total <= MAX_OUTPUT_BYTES:
-                    chunks.append(chunk)
-                elif total - len(chunk) < MAX_OUTPUT_BYTES:
+                    sub.output += chunk.decode(errors="replace")
+                elif not truncated:
                     head_room = MAX_OUTPUT_BYTES - (total - len(chunk))
-                    chunks.append(chunk[:head_room])
+                    if head_room > 0:
+                        sub.output += chunk[:head_room].decode(errors="replace")
+                    sub.output += f"\n…[output truncated at {MAX_OUTPUT_BYTES} bytes]"
+                    truncated = True
 
         await asyncio.wait_for(_drain(), timeout=DEFAULT_TIMEOUT_S)
         rc = await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -153,10 +164,6 @@ async def run_subtask(sub: SubTask, cmd: list[str]) -> None:
         sub.rc = -1
         raise
 
-    body = b"".join(chunks).decode(errors="replace")
-    if total > MAX_OUTPUT_BYTES:
-        body += f"\n…[output truncated at {MAX_OUTPUT_BYTES} bytes]"
-    sub.output = body
     sub.rc = rc
     sub.status = "done" if rc == 0 else "failed"
 

@@ -358,6 +358,16 @@ class TermApp(App[None]):
     def on_sidebar_node_selected(self, message: Sidebar.NodeSelected) -> None:
         self._focus_node(message.node_id)
 
+    def on_sidebar_task_selected(
+        self, message: Sidebar.TaskSelected,
+    ) -> None:
+        """Open the sub-task inspector for the clicked task row."""
+        for sub in self._subtasks:
+            if sub.id == message.task_id:
+                from term.widgets.subtask_inspector import SubTaskInspectorScreen
+                self.push_screen(SubTaskInspectorScreen(sub))
+                return
+
     def on_sidebar_add_requested(self, _message: Sidebar.AddRequested) -> None:
         self.action_add_agent()
 

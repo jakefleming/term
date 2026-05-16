@@ -88,7 +88,8 @@ _HELP = """\
   the requester's worktree, caps concurrency at 5, captures stdout, and
   delivers the result to the requester's pane prefixed
   [code][sub-task done · ...][/code]. The sidebar Tasks section shows
-  in-flight subs.
+  in-flight subs — click a task row to open the inspector with the
+  prompt and live stdout stream.
 
 [b]Concepts[/b]
   A node = agent (CLI to run) + optional role (prompt template) + mode

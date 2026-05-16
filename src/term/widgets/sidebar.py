@@ -70,6 +70,13 @@ class Sidebar(Vertical):
             super().__init__()
             self.node_id = node_id
 
+    class TaskSelected(Message):
+        """Posted when the user activates a sub-task row in the tray."""
+
+        def __init__(self, task_id: str) -> None:
+            super().__init__()
+            self.task_id = task_id
+
     class AddRequested(Message):
         """Posted when the user activates the '+ Add agent' row."""
         pass
@@ -150,15 +157,21 @@ class Sidebar(Vertical):
                     f"    {agent}  ·  {role}"
                 )
                 await lv.append(ListItem(Label(label)))
-            # Tasks tray: in-flight sub-agent runs, if any.
+            # Tasks tray: in-flight sub-agent runs, if any. Track the
+            # subtask id per row so a click on the row can be mapped
+            # back to a SubTask without depending on the list index.
             live_tasks = [
                 s for s in self.subtasks
                 if s.status in {"queued", "running"}
             ]
+            self._row_task_ids: list[str | None] = (
+                [None] * len(self.pipeline.nodes)
+            )
             if live_tasks:
                 header = ListItem(Label(f"─ Tasks ({len(live_tasks)}) ─"))
                 header.add_class("tasks-header")
                 await lv.append(header)
+                self._row_task_ids.append(None)
                 for sub in live_tasks:
                     elapsed = int(sub.elapsed)
                     mm, ss = elapsed // 60, elapsed % 60
@@ -172,9 +185,11 @@ class Sidebar(Vertical):
                     row = ListItem(Label(text))
                     row.add_class("task-row")
                     await lv.append(row)
+                    self._row_task_ids.append(sub.id)
             add_item = ListItem(Label("+ Add agent"))
             add_item.add_class("add-row")
             await lv.append(add_item)
+            self._row_task_ids.append(None)  # add-agent row
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         index = event.list_view.index
@@ -186,8 +201,16 @@ class Sidebar(Vertical):
                 self.NodeSelected(self.pipeline.nodes[index].spec.id)
             )
             return
-        # Beyond the node rows: tasks header + task rows are inert; only
-        # the final "+ Add agent" row triggers the AddRequested message.
+        # Beyond the node rows: dispatch by the per-row table built in
+        # refresh_nodes (handles task rows + add row + the inert
+        # "Tasks" header in any order). Defensively bounds-check.
+        row_ids = getattr(self, "_row_task_ids", None)
+        if row_ids is not None and 0 <= index < len(row_ids):
+            tid = row_ids[index]
+            if tid is not None:
+                self.post_message(self.TaskSelected(tid))
+                return
+        # Last row is "+ Add agent".
         list_view = event.list_view
         if index == len(list_view.children) - 1:
             self.post_message(self.AddRequested())

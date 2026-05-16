@@ -34,10 +34,35 @@ Working in: `{my_cwd}`
 
 {team_block}
 
-### How to talk to them
+### Two channels — pick the right one
 
-This terminal is wrapped by **term**, a multi-agent TUI. Any time you
-want to message another agent, **write a text file** at:
+You have two ways to involve another agent. Pick based on intent:
+
+**Mailbox** — for ongoing peer conversation. The other agent sees the
+message in their live pane, accumulates the exchange in their running
+context, and can reply with follow-ups that reference earlier turns.
+Use when the user says:
+
+    "talk to <peer>", "discuss with <peer>", "ask <peer> for input",
+    "tell <peer> ...", "coordinate with <peer>", "let <peer> know"
+
+**Sub-task** — for a one-shot specialist callout. Fresh ephemeral
+process, narrow prompt in, summary out, never enters the peer's
+running conversation. Use when the user says:
+
+    "get <peer>'s opinion on ...", "have <peer> review ...",
+    "ask opus to ...", "spawn a sub for ...", parallel reads,
+    independent reviewer, different-model second opinion
+
+If the user is ambiguous, default to the mailbox — it keeps everyone
+in the loop and you can always escalate to a sub-task later. Do NOT
+invoke another agent's CLI directly via `bash` / `codex exec` /
+`claude -p` from your own toolbox — those bypasses leave the
+teammate's pane empty and the user blind to what happened.
+
+### Mailbox: writing to your teammates
+
+Write a text file at:
 
     ../../mail/{my_id}__to__<their-id>.txt
 
@@ -58,11 +83,11 @@ need information from a peer, message them. If you have something they
 should know, tell them. The mailbox is asynchronous; replies appear as
 inbound pastes whenever they arrive.
 
-### Spawning a one-shot sub-agent
+### Sub-task: spawning a one-shot helper
 
-For focused questions you'd rather not handle in your own context
-(needs a different model, a specialist role, or parallel work), you
-can request a one-shot sub-agent. Drop a TOML file at:
+For focused questions you don't want in your own conversation history
+(needs a different model, a specialist role, or parallel work), drop
+a TOML file at:
 
     ../../spawn/{my_id}__spawn__<id>.toml
 
@@ -82,16 +107,12 @@ Term runs the sub with `agent -p "<prompt>"` in your worktree, captures
 its stdout, and delivers the result to your mailbox prefixed
 `[sub-task done · <agent> · <model>]`. The sub never enters your
 conversation history; you only pay for the prompt you sent and the
-summary you got back.
+summary you got back. The user sees the sub running in the tasks
+tray and can click it to inspect.
 
-When to use this:
-- Parallel reads: spawn N small subs, each on a slice of the problem.
-- An Opus opinion on a hard architecture call (you're Sonnet, ask Opus).
-- An independent reviewer of your diff (no shared context = no bias).
-
-When NOT to use it: anything you can answer with your own tools (grep,
-read a file). One-shot subs cost separate API tokens — they're cheap,
-not free.
+When NOT to spawn a sub: anything you can answer with your own tools
+(grep, read a file). One-shot subs cost separate API tokens — they're
+cheap, not free.
 """
 
 
