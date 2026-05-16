@@ -31,8 +31,11 @@ _HELP = """\
   handoff <node>                     Reroute: focused → <node>
   swap-agent <agent>                 Replace focused node's CLI
   swap-role <role|none>              Change focused node's prompt template
-  resume [<node>]                    Resume conversation (uses agent's
-                                     resume_args, e.g. claude --continue)
+  resume [<node>]                    Resume conversation now (uses agent's
+                                     resume_args, e.g. claude --continue).
+                                     Term also auto-resumes on launch.
+  fresh [<node>]                     Restart a node from scratch (drops the
+                                     conversation auto-resume picked up)
   tell <node> <message>              Inject a message into another pane
                                      as [From <you>]: <message>. Use to
                                      relay between agents.
@@ -50,9 +53,10 @@ _HELP = """\
 [b]Sessions[/b]
   A workspace can hold many sessions, each an independent pipeline with
   its own worktrees. Click the session header at the top of the sidebar
-  (or press F9) to switch. Conversations don't auto-resume on session
-  switch — they get fresh CLI sessions; use [code]:resume[/code] on a node
-  whose sidebar shows ↻ to continue an earlier chat.
+  (or press F9) to switch. On launch and on session switch, previously-
+  seen agents auto-resume via their configured resume_args (e.g.
+  [code]claude --continue[/code]) so conversations pick up where you left
+  off. Use [code]:fresh[/code] on a node to drop history and start clean.
 
 [b]Agent ↔ agent messaging[/b]
   Each spawn picker offers an optional [i]Name[/i] (e.g. "Alice"). The

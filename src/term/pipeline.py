@@ -19,6 +19,11 @@ class NodeState:
     # Used by :resume: a "seen" node has CLI history we can pick up; a
     # never-seen node has nothing to resume.
     seen: bool = False
+    # If non-None: monotonic timestamp when this pane was last spawned
+    # with resume_args (e.g. `claude --continue`). Used to detect when
+    # resume fails (e.g. no prior conversation in cwd → claude exits
+    # immediately) so we can fall back to a fresh spawn automatically.
+    resumed_at: float | None = None
 
 
 class PipelineRun:

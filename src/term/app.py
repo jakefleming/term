@@ -288,12 +288,17 @@ class TermApp(App[None]):
         if node.spec.mode == "persistent":
             recipe = self.config.agent_for_node(node.spec)
             base = recipe.command
-            if resume and recipe.resume_args:
+            resumed = resume and bool(recipe.resume_args)
+            if resumed:
                 base = tuple(recipe.command) + tuple(recipe.resume_args)
             command = self._yolo_extend(base, recipe)
             await switcher.mount(
                 PtyPane(command, cwd=str(node.worktree.path), id=pane_id)
             )
+            # Stamp so the watchdog can detect an immediate exit (e.g.
+            # `claude --continue` when nothing to continue) and fall
+            # back to a fresh spawn.
+            node.resumed_at = time.monotonic() if resumed else None
         else:
             label = f"{node.spec.agent}" + (
                 f" · {node.spec.role}" if node.spec.role else ""
@@ -725,10 +730,18 @@ class TermApp(App[None]):
         except Exception:
             pass
 
+    # If a resumed pane (spawned with resume_args) exits within this
+    # window with a non-zero code, treat it as "nothing to resume" and
+    # respawn fresh. Conservative: real conversations stay alive much
+    # longer than this; legitimate fast crashes shouldn't be masked
+    # because we only fall back once per node per spawn.
+    _RESUME_FAILURE_WINDOW = 3.0
+
     async def _tick_status(self) -> None:
         """Update persistent-node statuses based on PTY activity."""
         now = time.monotonic()
         changed = False
+        fallback: list[NodeState] = []
         for node in self.pipeline.nodes:
             if node.spec.mode != "persistent":
                 continue
@@ -748,12 +761,52 @@ class TermApp(App[None]):
                 if new_status == "exited" and (
                     pane.exit_code is not None and pane.exit_code != 0
                 ):
-                    self._mood.observe_pane_exit(pane.exit_code)
+                    # Auto-resume failed (e.g. claude --continue with no
+                    # prior conversation in cwd). Fall back to a fresh
+                    # spawn so the user doesn't see a dead pane.
+                    if (
+                        node.resumed_at is not None
+                        and (now - node.resumed_at) < self._RESUME_FAILURE_WINDOW
+                    ):
+                        fallback.append(node)
+                    else:
+                        self._mood.observe_pane_exit(pane.exit_code)
                 node.status = new_status
                 changed = True
+            # If the resume window has elapsed and the pane is still
+            # alive, clear the stamp so a later real exit doesn't
+            # incorrectly trigger a fallback.
+            elif (
+                node.resumed_at is not None
+                and (now - node.resumed_at) >= self._RESUME_FAILURE_WINDOW
+            ):
+                node.resumed_at = None
         if changed:
             await self.query_one(Sidebar).refresh_nodes()
+        for node in fallback:
+            asyncio.create_task(self._fallback_to_fresh_spawn(node))
         self._refresh_mood_display()
+
+    async def _fallback_to_fresh_spawn(self, node: NodeState) -> None:
+        """Resume failed (pane exited fast). Respawn without resume_args."""
+        node.resumed_at = None
+        switcher = self.query_one("#panes", ContentSwitcher)
+        pane_id = self._pane_id(node.spec.id)
+        try:
+            old = self.query_one(f"#{pane_id}")
+            await old.remove()
+        except Exception:
+            pass
+        await self._mount_panel_for(node, switcher, resume=False)
+        node.status = "idle"
+        await self.query_one(Sidebar).refresh_nodes()
+        if self._current_node_id == node.spec.id:
+            self._focus_node(node.spec.id)
+        self.notify(
+            f"{node.spec.display}: no prior conversation to resume — "
+            f"started fresh",
+            timeout=5,
+        )
 
     # --- handoff (F2 / palette) --------------------------------------------
 
@@ -916,6 +969,7 @@ class TermApp(App[None]):
             "edit":           self._cmd_edit,
             "rerun":          self._cmd_rerun,
             "resume":         self._cmd_resume,
+            "fresh":          self._cmd_fresh,
             "tell":           self._cmd_tell,
             "brief":          self._cmd_brief,
             "swap-agent":     self._cmd_swap_agent,
@@ -1156,9 +1210,23 @@ class TermApp(App[None]):
         """Resume conversation for a node (or the focused one).
 
         Tears down the current pane and respawns the agent with its
-        configured resume_args (e.g. `claude --continue`). Only meaningful
-        for persistent nodes whose agent declares resume_args.
+        configured resume_args (e.g. `claude --continue`). Auto-resume
+        on app launch usually makes this redundant; it's still handy
+        if you spawned an agent and want to pick up an older chat in
+        the same worktree.
         """
+        await self._respawn_node(args, resume=True)
+
+    async def _cmd_fresh(self, args: list[str]) -> None:
+        """Restart a node from scratch — the inverse of :resume.
+
+        Tears down the current pane and respawns without resume_args,
+        so the agent forgets its prior conversation. Useful when
+        auto-resume picked up history you no longer want.
+        """
+        await self._respawn_node(args, resume=False)
+
+    async def _respawn_node(self, args: list[str], *, resume: bool) -> None:
         node_id = args[0] if args else self._current_node_id
         if node_id is None:
             self.notify("no node focused", severity="warning")
@@ -1169,10 +1237,13 @@ class TermApp(App[None]):
             self.notify(f"unknown node: {node_id!r}", severity="error")
             return
         if node.spec.mode != "persistent":
-            self.notify("resume is only for persistent nodes", severity="warning")
+            verb = "resume" if resume else "fresh"
+            self.notify(
+                f"{verb} is only for persistent nodes", severity="warning",
+            )
             return
         recipe = self.config.agent_for_node(node.spec)
-        if not recipe.resume_args:
+        if resume and not recipe.resume_args:
             self.notify(
                 f"agent {recipe.name!r} has no resume_args — set "
                 f"`resume_args = [...]` in config",
@@ -1186,16 +1257,12 @@ class TermApp(App[None]):
             await old.remove()
         except Exception:
             pass
-        # Spawn with command + resume_args (plus yolo if active).
-        cmd = list(recipe.command) + list(recipe.resume_args)
-        if self._yolo and recipe.yolo_args:
-            cmd.extend(recipe.yolo_args)
-        await switcher.mount(
-            PtyPane(cmd, cwd=str(node.worktree.path), id=pane_id)
-        )
+        await self._mount_panel_for(node, switcher, resume=resume)
         node.status = "idle"
         self._focus_node(node.spec.id)
-        self.notify(f"resumed {node.spec.id}")
+        self.notify(
+            f"{'resumed' if resume else 'restarted fresh'} {node.spec.id}"
+        )
         self._save_session()
 
     async def _cmd_reset_session(self, _args: list[str]) -> None:

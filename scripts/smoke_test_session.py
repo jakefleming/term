@@ -109,6 +109,16 @@ async def _drive() -> int:
             assert "--resumed" in text, f":resume didn't use resume_args, got {text!r}"
             print(f"  2nd: :resume used resume_args: {text!r}")
 
+            # :fresh — inverse of :resume — drops --resumed.
+            args_file.unlink(missing_ok=True)
+            await app._dispatch_command("fresh")
+            for _ in range(30):
+                if args_file.exists(): break
+                await asyncio.sleep(0.1)
+            text = args_file.read_text().strip()
+            assert "--resumed" not in text, f":fresh shouldn't use resume_args, got {text!r}"
+            print(f"  2nd: :fresh dropped resume_args: {text!r}")
+
         await _launch_and(tmp, second)
 
         # 3rd launch: trigger reset-session, restart, should be empty again.
