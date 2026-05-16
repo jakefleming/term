@@ -681,16 +681,20 @@ class TermApp(App[None]):
         if not pane.is_alive or pane._proc is None:
             return False
         wrapped = f"[From {sender}]: {content}"
+        # Always auto-submit (send Enter after the bracketed paste) so the
+        # receiving agent actually processes the message without you having
+        # to manually hit Enter in their pane.
         data = (
             b"\x1b[200~"
             + wrapped.encode("utf-8", errors="replace")
             + b"\x1b[201~"
+            + b"\r"
         )
         try:
             os.write(pane._proc.fd, data)
         except OSError:
             return False
-        self.notify(f"delivered to {target_node_id} (from {sender})", timeout=3)
+        self.notify(f"delivered to {node.spec.display} (from {sender})", timeout=3)
         return True
 
     def _refresh_mood_display(self) -> None:
