@@ -75,6 +75,21 @@ _HELP = """\
   brief them. Tell them once "talk to Alice when you need X" and they
   can do so autonomously. Replies arrive at your prompt as pastes.
 
+[b]Sub-task spawn (agents spawning agents)[/b]
+  Agents can request a one-shot sub-agent — e.g. claude asking opus
+  for a hard call, or fan-out parallel file reads on haiku. They drop:
+
+      ../../spawn/<their-id>__spawn__<task-id>.toml
+
+  with fields [code]agent[/code], [code]prompt[/code], and optionally
+  [code]model[/code] (opus / sonnet / haiku for claude-code; configured
+  per agent in [code][agents.<name>.models][/code]), [code]role[/code],
+  and [code]name[/code]. Term runs [code]agent -p "<prompt>"[/code] in
+  the requester's worktree, caps concurrency at 5, captures stdout, and
+  delivers the result to the requester's pane prefixed
+  [code][sub-task done · ...][/code]. The sidebar Tasks section shows
+  in-flight subs.
+
 [b]Concepts[/b]
   A node = agent (CLI to run) + optional role (prompt template) + mode
   (persistent / one-shot). Agent and role are independent — same agent can

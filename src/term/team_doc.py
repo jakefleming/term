@@ -57,6 +57,41 @@ You may coordinate autonomously without asking the user first. If you
 need information from a peer, message them. If you have something they
 should know, tell them. The mailbox is asynchronous; replies appear as
 inbound pastes whenever they arrive.
+
+### Spawning a one-shot sub-agent
+
+For focused questions you'd rather not handle in your own context
+(needs a different model, a specialist role, or parallel work), you
+can request a one-shot sub-agent. Drop a TOML file at:
+
+    ../../spawn/{my_id}__spawn__<id>.toml
+
+Required fields:
+
+    agent  = "claude-code"     # or "codex" — which CLI to invoke
+    prompt = '''<the question, self-contained>'''
+
+Optional fields:
+
+    model  = "opus"            # alias from the agent's [models] table
+                               # (claude-code: opus | sonnet | haiku)
+    name   = "diff-review"     # shown in the tasks tray
+    role   = "reviewer"        # wraps prompt with role template
+
+Term runs the sub with `agent -p "<prompt>"` in your worktree, captures
+its stdout, and delivers the result to your mailbox prefixed
+`[sub-task done · <agent> · <model>]`. The sub never enters your
+conversation history; you only pay for the prompt you sent and the
+summary you got back.
+
+When to use this:
+- Parallel reads: spawn N small subs, each on a slice of the problem.
+- An Opus opinion on a hard architecture call (you're Sonnet, ask Opus).
+- An independent reviewer of your diff (no shared context = no bias).
+
+When NOT to use it: anything you can answer with your own tools (grep,
+read a file). One-shot subs cost separate API tokens — they're cheap,
+not free.
 """
 
 

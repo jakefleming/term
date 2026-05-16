@@ -45,6 +45,14 @@ from term.session import (
     seed_pipeline_from_config,
     slugify as _slugify,
 )
+from term.subagent import (
+    MAX_CONCURRENT_SUBS,
+    SubTask,
+    build_subtask_command,
+    new_id as _new_subtask_id,
+    render_delivery,
+    run_subtask,
+)
 from term.team_doc import write_team_docs
 from term.widgets.session_picker import SessionPickerScreen, _SessionRow
 from term.widgets.command_palette import CommandPaletteScreen
@@ -134,6 +142,9 @@ class TermApp(App[None]):
         self._session: Session | None = None  # set in on_mount
         self._mood = MoodTracker()
         self._last_mood: str = "neutral"
+        # In-flight one-shot sub-agents spawned by other agents.
+        # Sidebar reads this each refresh; _tick_spawn drains the queue.
+        self._subtasks: list[SubTask] = []
 
     async def on_paste(self, event) -> None:
         """App-level paste handler.
@@ -207,7 +218,9 @@ class TermApp(App[None]):
         self._sessions.migrate_legacy()
         info = self._sessions.get_or_create_default()
         self._session = self._sessions.open_session(info)
-        self.query_one(Sidebar).set_session_name(info.name)
+        sidebar = self.query_one(Sidebar)
+        sidebar.set_session_name(info.name)
+        sidebar.subtasks = self._subtasks
 
         # Load this session's pipeline, or seed from config if it's new.
         saved = self._session.load()
@@ -256,7 +269,9 @@ class TermApp(App[None]):
         self.set_interval(2.0, self._tick_mood)
         # Tick the mailbox to deliver inter-agent messages.
         self.set_interval(1.5, self._tick_mail)
-        # Ensure mailbox dir exists for the current session.
+        # Tick the spawn queue to launch / clean up sub-agents.
+        self.set_interval(1.5, self._tick_spawn)
+        # Ensure mailbox + spawn dirs exist for the current session.
         if self._session is not None:
             self._session.ensure()
 
@@ -582,6 +597,12 @@ class TermApp(App[None]):
         sidebar = self.query_one(Sidebar)
         sidebar.set_session_name(info.name)
         sidebar.set_session_mood("neutral")
+        # Subtask list is per-app; bind here in case the sidebar was
+        # mounted before the list was created (defensive — no-op if
+        # they're already the same reference).
+        sidebar.subtasks = self._subtasks
+        # Ensure mailbox + spawn dirs exist for the new session.
+        self._session.ensure()
 
         saved = self._session.load()
         if saved:
@@ -629,6 +650,12 @@ class TermApp(App[None]):
     async def _teardown_current_session(self) -> None:
         """Save the current session, then unmount its panes and clear pipeline."""
         self._save_session()
+        # Cancel any in-flight sub-tasks — they reference worktrees in
+        # the outgoing session and their senders won't be reachable.
+        for sub in self._subtasks:
+            if sub.task is not None and not sub.task.done():
+                sub.task.cancel()
+        self._subtasks.clear()
         switcher = self.query_one("#panes", ContentSwitcher)
         switcher.current = "empty-state"
         # Remove all per-node widgets (PtyPane or OneShotPanel).
@@ -663,6 +690,187 @@ class TermApp(App[None]):
                 content=content,
                 sender=sender or "unknown",
             )
+
+    def _tick_spawn(self) -> None:
+        """Pick up sub-task spawn requests and launch / reap them."""
+        if self._session is None:
+            return
+        for sender, payload, path in self._session.drain_spawn_requests():
+            try:
+                self._dispatch_spawn_request(sender, payload, path)
+            except Exception as e:
+                # Anything we didn't catch upstream — surface it and
+                # remove the source file so we don't loop forever.
+                self.notify(
+                    f"sub-task: dispatch failed ({e})", severity="error",
+                )
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        # Drop done/cancelled subs from the tray after they've delivered.
+        before = len(self._subtasks)
+        self._subtasks = [
+            s for s in self._subtasks
+            if s.status in {"queued", "running"}
+        ]
+        # Refresh the sidebar each tick while subs are live so the
+        # "elapsed time" cell ticks forward, and on any roster change.
+        if self._subtasks or len(self._subtasks) != before:
+            asyncio.create_task(self.query_one(Sidebar).refresh_nodes())
+
+    def _dispatch_spawn_request(
+        self, sender: str, payload: dict, source: Path,
+    ) -> None:
+        """Validate and launch a single spawn request from the queue."""
+        assert self._session is not None
+        # Always delete the source file first so a re-tick can't double-fire.
+        try:
+            source.unlink()
+        except OSError:
+            pass
+
+        if not sender:
+            self.notify(
+                "sub-task: spawn file is missing the '<sender>__spawn__' prefix",
+                severity="warning",
+            )
+            return
+        if "_error" in payload:
+            self.notify(
+                f"sub-task from {sender}: {payload['_error']}",
+                severity="error",
+            )
+            return
+
+        sender_node = self._resolve_node(sender)
+        if sender_node is None:
+            self.notify(
+                f"sub-task: unknown requester {sender!r}", severity="warning",
+            )
+            return
+
+        agent_name = payload.get("agent")
+        prompt_text = payload.get("prompt")
+        if not agent_name or not isinstance(agent_name, str):
+            self._fail_subtask_delivery(
+                sender_node.spec.id,
+                "spawn request missing required field: agent",
+            )
+            return
+        if not prompt_text or not isinstance(prompt_text, str):
+            self._fail_subtask_delivery(
+                sender_node.spec.id,
+                "spawn request missing required field: prompt",
+            )
+            return
+        recipe = self.config.agents.get(agent_name)
+        if recipe is None:
+            self._fail_subtask_delivery(
+                sender_node.spec.id,
+                f"spawn request: unknown agent {agent_name!r}",
+            )
+            return
+
+        # Role wrap: if requested, prepend the role's prompt_template.
+        role = payload.get("role")
+        if role:
+            role_obj = self.config.roles.get(role)
+            if role_obj is None:
+                self._fail_subtask_delivery(
+                    sender_node.spec.id,
+                    f"spawn request: unknown role {role!r}",
+                )
+                return
+            if role_obj.prompt_template:
+                prompt_text = role_obj.prompt_template + "\n\n" + prompt_text
+
+        model = payload.get("model")
+        if model is not None and not isinstance(model, str):
+            self._fail_subtask_delivery(
+                sender_node.spec.id, "spawn request: model must be a string",
+            )
+            return
+
+        # Concurrency cap.
+        live = sum(1 for s in self._subtasks if s.status in {"queued", "running"})
+        if live >= MAX_CONCURRENT_SUBS:
+            self._fail_subtask_delivery(
+                sender_node.spec.id,
+                f"spawn request rejected: {live} subs already running "
+                f"(cap {MAX_CONCURRENT_SUBS})",
+            )
+            return
+
+        cmd, err = build_subtask_command(
+            recipe, model=model, yolo=self._yolo, prompt=prompt_text,
+        )
+        if err:
+            self._fail_subtask_delivery(sender_node.spec.id, err)
+            return
+
+        display = (payload.get("name") or "").strip() or _new_subtask_id()[:6]
+        sub = SubTask(
+            id=_new_subtask_id(),
+            sender_id=sender_node.spec.id,
+            agent_name=agent_name,
+            model=model,
+            display=display,
+            prompt=prompt_text,
+            cwd=sender_node.worktree.path,
+            started_at=time.monotonic(),
+        )
+        self._subtasks.append(sub)
+        sub.task = asyncio.create_task(self._supervise_subtask(sub, cmd))
+        asyncio.create_task(self.query_one(Sidebar).refresh_nodes())
+        self.notify(
+            f"sub-task: {sender_node.spec.display} → {agent_name}"
+            + (f" ({model})" if model else "")
+            + f" · {display}",
+            timeout=3,
+        )
+
+    async def _supervise_subtask(self, sub: SubTask, cmd: list[str]) -> None:
+        """Run the sub to completion and deliver the result to its sender."""
+        try:
+            await run_subtask(sub, cmd)
+        except asyncio.CancelledError:
+            # Sub was cancelled (e.g. session switch). Still try to deliver
+            # what we have so the sender knows why it never heard back.
+            sub.status = "cancelled"
+            raise
+        finally:
+            self._deliver_subtask_result(sub)
+            try:
+                await self.query_one(Sidebar).refresh_nodes()
+            except Exception:
+                pass
+
+    def _deliver_subtask_result(self, sub: SubTask) -> None:
+        """Inject the sub's result into the requester's pane (or notify)."""
+        body = render_delivery(sub)
+        node = self._resolve_node(sub.sender_id)
+        if node is None or node.spec.mode != "persistent":
+            # Requester is gone or one-shot itself — surface in the UI.
+            self.notify(
+                f"sub-task {sub.display} done (no live requester to deliver to)",
+                timeout=5,
+            )
+            return
+        self._inject_message_to_node(
+            target_node_id=sub.sender_id, content=body, sender=sub.agent_name,
+        )
+
+    def _fail_subtask_delivery(self, sender_id: str, reason: str) -> None:
+        """Tell the requester their spawn request didn't fly."""
+        body = f"[sub-task rejected]\n{reason}\n"
+        node = self._resolve_node(sender_id)
+        if node is not None and node.spec.mode == "persistent":
+            self._inject_message_to_node(
+                target_node_id=sender_id, content=body, sender="term",
+            )
+        else:
+            self.notify(f"sub-task ({sender_id}): {reason}", severity="warning")
 
     def _resolve_node(self, ref: str) -> NodeState | None:
         """Find a node by id, display name, or slugified display name."""

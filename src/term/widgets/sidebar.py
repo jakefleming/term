@@ -56,6 +56,13 @@ class Sidebar(Vertical):
         color: $accent;
         text-style: bold;
     }
+    Sidebar ListItem.tasks-header Label {
+        color: $text-muted;
+        text-style: italic;
+    }
+    Sidebar ListItem.task-row Label {
+        color: $secondary;
+    }
     """
 
     class NodeSelected(Message):
@@ -81,6 +88,9 @@ class Sidebar(Vertical):
         self.pipeline = pipeline
         self._session_name = session_name
         self._refresh_lock: asyncio.Lock | None = None
+        # Read on each refresh. Set by the app when sub-tasks are
+        # active so we can show a small "Tasks" tray.
+        self.subtasks: list = []
 
     def set_session_name(self, name: str) -> None:
         self._session_name = name
@@ -140,6 +150,28 @@ class Sidebar(Vertical):
                     f"    {agent}  ·  {role}"
                 )
                 await lv.append(ListItem(Label(label)))
+            # Tasks tray: in-flight sub-agent runs, if any.
+            live_tasks = [
+                s for s in self.subtasks
+                if s.status in {"queued", "running"}
+            ]
+            if live_tasks:
+                header = ListItem(Label(f"─ Tasks ({len(live_tasks)}) ─"))
+                header.add_class("tasks-header")
+                await lv.append(header)
+                for sub in live_tasks:
+                    elapsed = int(sub.elapsed)
+                    mm, ss = elapsed // 60, elapsed % 60
+                    model_tag = f" {sub.model}" if sub.model else ""
+                    state_dot = "●" if sub.status == "running" else "·"
+                    text = (
+                        f"  {state_dot} {sub.sender_id} → "
+                        f"{sub.agent_name}{model_tag}\n"
+                        f"      {sub.display}   {mm:d}:{ss:02d}"
+                    )
+                    row = ListItem(Label(text))
+                    row.add_class("task-row")
+                    await lv.append(row)
             add_item = ListItem(Label("+ Add agent"))
             add_item.add_class("add-row")
             await lv.append(add_item)
@@ -148,13 +180,17 @@ class Sidebar(Vertical):
         index = event.list_view.index
         if index is None:
             return
-        if index >= len(self.pipeline.nodes):
-            # The trailing "+ Add agent" row.
-            self.post_message(self.AddRequested())
+        n_nodes = len(self.pipeline.nodes)
+        if index < n_nodes:
+            self.post_message(
+                self.NodeSelected(self.pipeline.nodes[index].spec.id)
+            )
             return
-        self.post_message(
-            self.NodeSelected(self.pipeline.nodes[index].spec.id)
-        )
+        # Beyond the node rows: tasks header + task rows are inert; only
+        # the final "+ Add agent" row triggers the AddRequested message.
+        list_view = event.list_view
+        if index == len(list_view.children) - 1:
+            self.post_message(self.AddRequested())
 
     def focus_list(self) -> None:
         self.query_one("#node-list", ListView).focus()

@@ -16,6 +16,12 @@ one_shot = ["claude", "-p", "{prompt}"]
 yolo_args = ["--dangerously-skip-permissions"]
 # Used when you explicitly :resume a node (the session was previously seen).
 resume_args = ["--continue"]
+# Friendly model aliases for sub-task spawn requests (model = "opus"
+# etc.). Inserted into the one_shot command before {prompt}.
+[agents.claude-code.models]
+opus    = ["--model", "claude-opus-4-7"]
+sonnet  = ["--model", "claude-sonnet-4-6"]
+haiku   = ["--model", "claude-haiku-4-5"]
 
 [agents.codex]
 command = ["codex"]
@@ -24,6 +30,10 @@ one_shot = ["codex", "exec", "{prompt}"]
 # yolo_args = ["--ask-for-approval", "never"]
 # Codex resume flag if your version supports it; user adjustable.
 # resume_args = ["--continue"]
+[agents.codex.models]
+# Aliases assume gpt-5-family flags; adjust to match your codex version.
+gpt-5      = ["--model", "gpt-5"]
+gpt-5-mini = ["--model", "gpt-5-mini"]
 
 [agents.shell]
 command = ["bash"]

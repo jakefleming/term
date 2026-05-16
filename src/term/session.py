@@ -87,11 +87,17 @@ class Session:
         # message to a peer in this session. Term watches the directory
         # and delivers them as bracketed-paste into the target pane.
         self.mail_dir = self._dir / "mail"
+        # Spawn queue: agents drop TOML files here to request a one-shot
+        # sub-task (different model, specialist role, parallel work).
+        # Term picks them up, runs the sub, delivers stdout back via the
+        # mailbox.
+        self.spawn_dir = self._dir / "spawn"
 
     def ensure(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         self.worktree_root.mkdir(parents=True, exist_ok=True)
         self.mail_dir.mkdir(parents=True, exist_ok=True)
+        self.spawn_dir.mkdir(parents=True, exist_ok=True)
 
     def drain_mail(self) -> list[tuple[str, str, str | None]]:
         """Read and consume any pending mail.
@@ -130,6 +136,43 @@ class Session:
             results.append((target, content, sender, mtime))
         results.sort(key=lambda t: t[3])
         return [(t, c, s) for (t, c, s, _) in results]
+
+    def drain_spawn_requests(self) -> list[tuple[str, dict, Path]]:
+        """Pull pending spawn requests from `spawn_dir`.
+
+        Returns a list of `(sender_id, payload, source_path)` tuples in
+        mtime order. Caller is responsible for deleting the source file
+        once it has decided to run / reject the request (so a failed run
+        doesn't lose the request).
+
+        Filename: `<sender>__spawn__<id>.toml` (matches the mailbox
+        `<sender>__to__<target>.txt` convention).
+        """
+        if not self.spawn_dir.exists():
+            return []
+        import tomllib
+        out: list[tuple[str, dict, Path, float]] = []
+        for p in self.spawn_dir.iterdir():
+            if not p.is_file() or p.suffix != ".toml":
+                continue
+            stem = p.stem
+            sender = ""
+            if "__spawn__" in stem:
+                sender = stem.split("__spawn__", 1)[0]
+            try:
+                payload = tomllib.loads(p.read_text())
+                mtime = p.stat().st_mtime
+            except (OSError, ValueError) as e:
+                # Malformed: rename out of the way so we don't reprocess.
+                try:
+                    p.rename(p.with_suffix(p.suffix + f".error-{int(time.time())}"))
+                except OSError:
+                    pass
+                payload = {"_error": f"parse failed: {e}"}
+                mtime = 0.0
+            out.append((sender, payload, p, mtime))
+        out.sort(key=lambda t: t[3])
+        return [(s, pl, pa) for (s, pl, pa, _) in out]
 
     def branch_for(self, node_id: str) -> str:
         return f"{self.info.branch_prefix}/{node_id}"

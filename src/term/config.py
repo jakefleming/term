@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -25,6 +25,10 @@ class AgentRecipe:
     # ["--continue"] for claude). Used when the user explicitly resumes a
     # node from a saved session.
     resume_args: tuple[str, ...] = ()
+    # Friendly model aliases → extra args appended to one_shot. Lets a
+    # spawn request say `model = "opus"` without each agent knowing
+    # claude's exact CLI flag. Empty = the agent ignores the model field.
+    models: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -106,12 +110,17 @@ def _deep_merge(into: dict, src: dict) -> None:
 def _build(raw: dict) -> Config:
     agents: dict[str, AgentRecipe] = {}
     for name, body in raw.get("agents", {}).items():
+        raw_models = body.get("models", {}) or {}
+        models = {
+            alias: tuple(args) for alias, args in raw_models.items()
+        }
         agents[name] = AgentRecipe(
             name=name,
             command=tuple(body["command"]),
             one_shot=tuple(body["one_shot"]) if "one_shot" in body else None,
             yolo_args=tuple(body.get("yolo_args", [])),
             resume_args=tuple(body.get("resume_args", [])),
+            models=models,
         )
 
     roles: dict[str, Role] = {}
