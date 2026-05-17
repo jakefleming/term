@@ -220,6 +220,22 @@ _TEMPLATES: dict[str, str] = {
    ) {mouth} (
     `---'
              """,
+
+    # --- crude humor (keyword-only, not in the hash fallback) ----------
+
+    "butt": """\
+   ,_, ,_,
+  ( {eyes} )
+   ) {mouth} (
+    \\_v_/
+             """,
+
+    "dick": """\
+   .---.
+  ( {eyes} )
+   ) {mouth} (
+     | |
+   (_o_o_)""",
 }
 
 
@@ -228,6 +244,18 @@ _TEMPLATES: dict[str, str] = {
 # first match wins, so list more-specific keys first.
 
 _KEYWORD_TO_TEMPLATE: list[tuple[str, str]] = [
+    # Crude humor first so unambiguous names ("Booty McRump",
+    # "Schlongmaster") don't get hijacked by shorter substring matches
+    # further down the list.
+    ("butthole", "butt"), ("buttcheek", "butt"),
+    ("butt", "butt"), ("booty", "butt"),
+    ("rump", "butt"), ("cheeks", "butt"),
+    ("derriere", "butt"), ("ass", "butt"),
+    ("dingle", "dick"), ("schlong", "dick"),
+    ("phallus", "dick"), ("johnson", "dick"),
+    ("willy", "dick"), ("wang", "dick"),
+    ("cock", "dick"), ("dick", "dick"),
+
     # --- headgear / personalities ---
     # Military / commander. "mander" catches names like "Codemander".
     ("commander", "commander"), ("mander", "commander"),
@@ -320,7 +348,7 @@ _KEYWORD_TO_TEMPLATE: list[tuple[str, str]] = [
     ("ghost", "ghost"), ("spirit", "ghost"),
     ("specter", "ghost"), ("spectre", "ghost"),
     ("phantom", "ghost"), ("wraith", "ghost"),
-    ("haunt", "ghost"), ("boo", "ghost"),
+    ("haunt", "ghost"),
 
     ("skull", "skull"), ("death", "skull"),
     ("dead", "skull"), ("corpse", "skull"),
