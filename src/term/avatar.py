@@ -231,11 +231,11 @@ _TEMPLATES: dict[str, str] = {
              """,
 
     "dick": """\
-   .---.
-  ( {eyes} )
-   ) {mouth} (
-     | |
-   (_o_o_)""",
+        .---.
+  8====( {eyes} )
+        ) {mouth} (
+         `---'
+                 """,
 }
 
 
